@@ -1,25 +1,5 @@
-// Minimal serverless function for Vercel deployment
-const multer = require('multer');
+// Ultra-minimal test function for debugging Vercel deployment
 const OpenAI = require('openai');
-
-// Configure storage for file uploads
-const storage = multer.memoryStorage();
-const upload = multer({ 
-  storage: storage,
-  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
-});
-
-// Helper function for multer in serverless
-function runMiddleware(req, res, fn) {
-  return new Promise((resolve, reject) => {
-    fn(req, res, (result) => {
-      if (result instanceof Error) {
-        return reject(result);
-      }
-      return resolve(result);
-    });
-  });
-}
 
 module.exports = async (req, res) => {
   // Enable CORS
@@ -33,80 +13,70 @@ module.exports = async (req, res) => {
     return res.status(200).end();
   }
 
-  // Only allow POST method
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
-
   try {
-    console.log('API endpoint called: /api/analyze-track');
+    // Log environment information
+    console.log('Node environment:', process.env.NODE_ENV);
+    console.log('API Key defined:', !!process.env.OPENAI_API_KEY);
+    console.log('API Key prefix:', process.env.OPENAI_API_KEY ? process.env.OPENAI_API_KEY.substring(0, 5) : 'undefined');
     
-    // Process the uploaded file
-    await runMiddleware(req, res, upload.single('track'));
-    
-    if (!req.file) {
-      return res.status(400).json({ error: 'No audio file uploaded' });
-    }
-    
-    console.log('File received:', req.file.originalname, 'Size:', req.file.size);
-    
-    // Basic audio features (simplest possible implementation)
-    const audioFeatures = {
-      tempo: 120,
-      key: 'C Major',
-      energy: 0.75,
-      dynamics: 7.5
+    // Create a basic response with diagnostic info
+    const diagnosticInfo = {
+      environment: process.env.NODE_ENV,
+      apiKeyDefined: !!process.env.OPENAI_API_KEY,
+      apiKeyPrefix: process.env.OPENAI_API_KEY ? process.env.OPENAI_API_KEY.substring(0, 5) : 'undefined'
     };
     
-    // Initialize OpenAI (using environment variable)
-    const openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    });
-    
-    console.log('OpenAI initialized, API Key starts with:', process.env.OPENAI_API_KEY ? process.env.OPENAI_API_KEY.substring(0, 5) + '...' : 'undefined');
-    
-    // Test if we can make a simple OpenAI API call
+    // Try to initialize OpenAI client
     try {
-      const completion = await openai.chat.completions.create({
-        model: "gpt-3.5-turbo", // Using a simpler model for testing
-        messages: [
-          {
-            role: "system",
-            content: "You are a helpful assistant."
-          },
-          {
-            role: "user",
-            content: "Hello, this is a test message to ensure the OpenAI API is working."
-          }
-        ],
-        max_tokens: 50
+      const openai = new OpenAI({
+        apiKey: process.env.OPENAI_API_KEY,
       });
       
-      console.log('OpenAI test call successful, response:', completion.choices[0].message.content);
+      diagnosticInfo.openaiInitialized = true;
       
-      // Since the test call worked, we'll return a simplified response
-      return res.status(200).json({
-        analysis: "# Track Analysis\n\nYour track analysis was successful! The OpenAI API connection is working properly.",
-        technicalInsights: "This is a test response to verify API connectivity.",
-        audioFeatures: audioFeatures
-      });
-      
-    } catch (openaiError) {
-      console.error('OpenAI API error:', openaiError.message);
-      throw new Error(`OpenAI API error: ${openaiError.message}`);
+      // Try a simple completion request
+      try {
+        const completion = await openai.chat.completions.create({
+          model: "gpt-3.5-turbo",
+          messages: [
+            { role: "user", content: "Hello, this is a test." }
+          ],
+          max_tokens: 10
+        });
+        
+        diagnosticInfo.apiCallSuccess = true;
+        diagnosticInfo.apiResponse = completion.choices[0].message.content;
+      } catch (apiError) {
+        diagnosticInfo.apiCallSuccess = false;
+        diagnosticInfo.apiError = apiError.message;
+      }
+    } catch (initError) {
+      diagnosticInfo.openaiInitialized = false;
+      diagnosticInfo.initError = initError.message;
     }
     
-  } catch (error) {
-    console.error('Error in serverless function:', error.message, error.stack);
-    return res.status(500).json({ 
-      error: 'Analysis failed', 
-      message: error.message,
-      details: error.stack,
+    // Return diagnostic information
+    return res.status(200).json({
+      analysis: "# Diagnostic Mode\n\nThis is a diagnostic response to troubleshoot deployment issues.",
+      technicalInsights: "Diagnostic information included in the response.",
+      diagnosticInfo: diagnosticInfo,
       audioFeatures: {
         tempo: 120,
         key: 'C Major',
-        energy: 0.7,
-        dynamics: 7.0
+        energy: 0.75,
+        dynamics: 7.5
+      }
+    });
+    
+  } catch (error) {
+    console.error('General error:', error.message, error.stack);
+    return res.status(500).json({ 
+      error: 'Diagnostic failed', 
+      message: error.message,
+      stack: error.stack,
+      env: {
+        nodeEnv: process.env.NODE_ENV,
+        hasApiKey: !!process.env.OPENAI_API_KEY
       }
     });
   }
