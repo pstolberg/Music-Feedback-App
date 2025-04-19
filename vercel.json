@@ -7,5 +7,10 @@
   },
   "rewrites": [
     { "source": "/api/analyze-track", "destination": "/api/analyze-track" }
-  ]
+  ],
+  "functions": {
+    "api/*.js": {
+      "maxDuration": 60
+    }
+  }
 }
