@@ -136,19 +136,6 @@ const TrackUploader = ({ onFeedbackReceived, onError, onUploadStart }) => {
   const validateAndSetFile = (file) => {
     if (!file) return;
 
-    // Mobile-specific validation
-    if (file.size > 15 * 1024 * 1024) { // 15MB max for mobile compatibility
-      setError('File too large. Please select a file smaller than 15MB for better mobile performance.');
-      return;
-    }
-    
-    // Check supported file types for mobile
-    const supportedTypes = ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav', 'audio/ogg'];
-    if (!supportedTypes.includes(file.type)) {
-      setError('Unsupported file type. Please upload an MP3, WAV, or OGG file.');
-      return;
-    }
-
     // Check file type
     const allowedTypes = ['audio/mpeg', 'audio/wav', 'audio/x-wav', 'audio/mp3', 'audio/aiff', 'audio/x-aiff', 'audio/flac'];
     if (!allowedTypes.includes(file.type) && !file.name.match(/\.(mp3|wav|aiff|flac)$/i)) {
@@ -186,106 +173,69 @@ const TrackUploader = ({ onFeedbackReceived, onError, onUploadStart }) => {
     fileInputRef.current.click();
   };
 
-  const isMobile = () => {
-    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || window.innerWidth < 768;
-  };
-
-  const handleSubmit = async (event) => {
-    event.preventDefault();
-    
+  const handleSubmit = async () => {
     if (!selectedFile) {
-      setError('Please select a track to upload.');
+      setError('Please select a track to upload');
       return;
     }
-    
-    // Mobile-specific timeout handling
-    let uploadTimeout;
-    if (isMobile()) {
-      uploadTimeout = setTimeout(() => {
-        setError('The upload is taking longer than expected. Mobile connections may be slower - please wait or try again on WiFi.');
-      }, 15000);
-    }
-    
+
     try {
       setIsUploading(true);
-      setError(null);
-      
-      // Create FormData with mobile-friendly settings
+      onUploadStart();
+
       const formData = new FormData();
       formData.append('track', selectedFile);
       
-      // Add reference artists if selected
       if (selectedArtists.length > 0) {
-        formData.append('referenceArtists', JSON.stringify(selectedArtists));
+        // Convert array of artist objects to array of names
+        const artistNames = selectedArtists.map(artist => artist.name);
+        formData.append('referenceArtists', JSON.stringify(artistNames));
       }
-      
-      // Enhanced for mobile with timeout handling
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), isMobile() ? 90000 : 120000); // Shorter timeout for mobile
-      
+
       const apiUrl = process.env.NODE_ENV === 'production' 
         ? '/api/analyze-track'  // In production, use relative path
         : 'http://localhost:5002/api/analyze-track'; // In development, use full URL
       
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        body: formData,
-        signal: controller.signal,
-        // Set mobile-optimized fetch options
-        headers: {
-          'X-Mobile-Request': isMobile() ? 'true' : 'false',
-        },
-        // Increase importance for mobile uploads
-        importance: isMobile() ? 'high' : 'auto',
-        // Make sure we're immediately connecting to the server
-        cache: 'no-store'
-      });
+      // Add timeout to prevent infinite hanging - abort after 50 seconds
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 50000);
       
-      clearTimeout(timeoutId);
-      
-      if (!response.ok) {
-        throw new Error(`Server error: ${response.status}`);
-      }
-      
-      const data = await response.json();
-      
-      if (data.error) {
-        throw new Error(data.message || 'Error analyzing track');
-      }
-      
-      // Handle slow mobile devices with a small delay to prevent UI freezing
-      if (isMobile()) {
-        setTimeout(() => {
-          onFeedbackReceived(data, selectedFile, selectedArtists);
-          setIsUploading(false);
-        }, 300);
-      } else {
-        onFeedbackReceived(data, selectedFile, selectedArtists);
-        setIsUploading(false);
-      }
-      
-    } catch (error) {
-      console.error('Upload error:', error);
-      
-      // Custom mobile-friendly error messages
-      if (isMobile()) {
-        if (error.name === 'AbortError') {
-          setError('The upload timed out. Please try again with a smaller file or on WiFi.');
-        } else if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
-          setError('Network error. Please check your mobile connection and try again.');
-        } else {
-          setError(`Error uploading track: ${error.message}`);
+      try {  
+        const response = await fetch(apiUrl, {
+          method: 'POST',
+          body: formData,
+          signal: controller.signal
+        });
+        
+        // Clear the timeout since we got a response
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.message || 'Failed to analyze track');
         }
-      } else {
-        setError(`Error uploading track: ${error.message}`);
+
+        const data = await response.json();
+        
+        // Format the track info to pass to parent component
+        const trackInfo = {
+          name: selectedFile.name,
+          size: selectedFile.size,
+          type: selectedFile.type
+        };
+        
+        onFeedbackReceived(data, trackInfo, selectedArtists);
+      } catch (error) {
+        if (error.name === 'AbortError') {
+          throw new Error('The request timed out. This could be due to server issues or a large file size.');
+        } else {
+          throw error;
+        }
       }
-      
+    } catch (error) {
       setIsUploading(false);
-    } finally {
-      // Clear the mobile timeout if it was set
-      if (uploadTimeout) {
-        clearTimeout(uploadTimeout);
-      }
+      setError(error.message || 'An error occurred during upload');
+      if (onError) onError(error.message);
     }
   };
 

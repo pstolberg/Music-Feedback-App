@@ -1,27 +1,18 @@
-// Enhanced serverless function for Music Feedback App - Optimized for mobile
+// Enhanced serverless function for Music Feedback App
 const OpenAI = require('openai');
 const multer = require('multer');
 const db = require('./db');
 
-// Configure multer for memory storage with stricter limits for mobile compatibility
+// Configure multer for memory storage
 const storage = multer.memoryStorage();
 const upload = multer({ 
   storage: storage,
-  limits: { 
-    fileSize: 15 * 1024 * 1024, // 15MB limit - reduced for mobile
-    fieldSize: 10 * 1024 * 1024  // Limit field size for better mobile handling
-  }
+  limits: { fileSize: 20 * 1024 * 1024 } // 20MB limit
 });
 
-// Helper function to run multer in serverless with timeout protection
+// Helper function to run multer in serverless
 function runMiddleware(req, res, fn) {
-  // Create a timeout promise to prevent hanging
-  const timeoutPromise = new Promise((_, reject) => {
-    setTimeout(() => reject(new Error('File upload timeout after 20 seconds')), 20000);
-  });
-  
-  // The actual middleware execution promise
-  const middlewarePromise = new Promise((resolve, reject) => {
+  return new Promise((resolve, reject) => {
     fn(req, res, (result) => {
       if (result instanceof Error) {
         return reject(result);
@@ -29,12 +20,9 @@ function runMiddleware(req, res, fn) {
       return resolve(result);
     });
   });
-  
-  // Race the promises to ensure we don't hang
-  return Promise.race([middlewarePromise, timeoutPromise]);
 }
 
-// Extract basic audio features (simplified for reliability and mobile performance)
+// Extract basic audio features (simplified for reliability)
 function extractBasicAudioFeatures(file) {
   // In a production environment, this would use more sophisticated analysis
   // For now, we're using randomized values within typical ranges
@@ -64,7 +52,7 @@ function extractBasicAudioFeatures(file) {
   };
 }
 
-// Generate AI feedback with GPT-4o - optimized for mobile with faster timeouts
+// Generate AI feedback with GPT-4o
 async function generateAIFeedback(audioFeatures, trackName, referenceArtists = []) {
   const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
@@ -102,9 +90,9 @@ ${referenceArtists && referenceArtists.length > 0 ? '6. Comparison to the refere
 Please format your response clearly with markdown headings and bullet points.
 `;
 
-    // Set a shorter timeout for the OpenAI call (optimized for mobile)
+    // Set a timeout for the OpenAI call
     const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('OpenAI API timeout after 20 seconds')), 20000);
+      setTimeout(() => reject(new Error('OpenAI API timeout after 25 seconds')), 25000);
     });
     
     // Make the API call with timeout protection
@@ -118,7 +106,7 @@ Please format your response clearly with markdown headings and bullet points.
           },
           { role: 'user', content: prompt }
         ],
-        max_tokens: 750, // Reduced for faster mobile response
+        max_tokens: 1000,
         temperature: 0.7
       }),
       timeoutPromise
@@ -129,32 +117,29 @@ Please format your response clearly with markdown headings and bullet points.
   } catch (error) {
     console.error('OpenAI API error:', error.message);
     
-    // Mobile-optimized fallback feedback (shorter)
-    return `# Track Analysis
+    // Provide fallback feedback if OpenAI fails
+    return `# Track Analysis: ${trackName || 'Untitled Track'}
 
 ## Overall Assessment
-Your track has good energy flow with a solid rhythm section. The arrangement effectively builds tension and provides satisfying release points.
+Your track has a solid foundation with a well-established rhythm section and good energy flow. The arrangement effectively builds tension and provides satisfying release points. Some elements could benefit from additional refinement in the mix.
 
 ## Mix Analysis
-- The low-end has good presence but could use tighter control
-- Good stereo width in the mid-range elements
-- Consider adding more definition to the high frequencies
+The low-end has good presence but could use tighter control. There's good stereo width in the mid-range elements. Consider adding more definition to the high frequencies and ensuring better separation between key elements.
 
 ## Creative Suggestions
-Try more automation to create movement throughout the track. Consider introducing subtle ambient textures during breakdowns to add more emotional depth.
+Try experimenting with more automation to create movement throughout the track. Consider introducing subtle ambient textures during breakdown sections to add more emotional depth and interest.
 
 *Note: This is a fallback analysis as our AI analysis engine is currently experiencing high demand.*`;
   }
 }
 
-// Enhanced main serverless function handler with mobile optimizations
+// Main serverless function handler
 module.exports = async (req, res) => {
-  // Set headers immediately to ensure proper mobile response handling
+  // Enable CORS for cross-origin requests
   res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version');
-  res.setHeader('Connection', 'keep-alive');
 
   // Handle OPTIONS request for CORS preflight
   if (req.method === 'OPTIONS') {
@@ -166,30 +151,13 @@ module.exports = async (req, res) => {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  // Create an overall timeout for the entire function
-  const functionTimeout = setTimeout(() => {
-    console.error('Function timeout reached - sending fallback response');
-    return res.status(200).json({
-      analysis: "Your track analysis timed out, but our initial review indicates good overall quality. Please try uploading again on a stronger connection.",
-      audioFeatures: {
-        tempo: 125,
-        key: 'C Major',
-        energy: 0.75,
-        dynamics: 7.5
-      },
-      model: 'gpt-4o (fallback)',
-      error: 'timeout'
-    });
-  }, 25000); // 25 second overall function timeout
-
   try {
-    // Process the file upload with timeout protection
+    // Process the file upload
     console.log('Processing track upload...');
     await runMiddleware(req, res, upload.single('track'));
 
     // Check if file was included
     if (!req.file) {
-      clearTimeout(functionTimeout);
       return res.status(400).json({ error: 'No audio file uploaded' });
     }
 
@@ -235,7 +203,6 @@ module.exports = async (req, res) => {
 
     // Return analysis response with the enhanced structure
     console.log('Sending successful response');
-    clearTimeout(functionTimeout); // Clear the timeout since we're responding successfully
     return res.status(200).json({
       analysis: analysis,
       technicalInsights: analysis,
@@ -250,21 +217,15 @@ module.exports = async (req, res) => {
     });
   } catch (error) {
     console.error('Error in serverless function:', error.message);
-    clearTimeout(functionTimeout); // Clear the timeout since we're responding with an error
-    return res.status(200).json({ 
+    return res.status(500).json({ 
       error: 'Analysis failed', 
       message: error.message,
-      analysis: "We encountered an issue analyzing your track. Please try again with a smaller file size or stronger connection.",
       audioFeatures: {
         tempo: 120,
         key: 'C Major',
         energy: 0.75,
         dynamics: 7.5
-      },
-      model: 'fallback'
+      }
     });
-  } finally {
-    // Always clear the timeout to prevent memory leaks
-    clearTimeout(functionTimeout);
   }
 };
