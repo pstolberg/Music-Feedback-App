@@ -5,11 +5,13 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { queueTrackAnalysis } = require('./services/queueService');
-const enhancedAudioAnalysis = require('./services/enhancedAudioAnalysis'); 
-const { generateBasicFeedback } = require('./services/basicFeedback'); // Import our new basic feedback generator
+const { generateBasicFeedback } = require('./services/basicFeedback'); 
+const { analyzeMusicTrack } = require('./services/enhancedOpenAI'); 
+const audioFeatureExtractor = require('./services/AudioFeatureExtractor');
+const redisManager = require('./services/redisManager');
 
 const app = express();
-const PORT = process.env.PORT || 5001;
+const PORT = process.env.PORT || 5002;
 
 // Create upload directory if it doesn't exist
 const uploadDir = path.join(__dirname, 'uploads');
@@ -17,43 +19,45 @@ if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
-// Configure multer for file uploads
+// Configure multer for file uploads with strict validation
 const storage = multer.diskStorage({
   destination: function(req, file, cb) {
     cb(null, uploadDir);
   },
   filename: function(req, file, cb) {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const ext = path.extname(file.originalname);
-    cb(null, uniqueSuffix + ext);
+    cb(null, 'track-' + Date.now() + path.extname(file.originalname));
   }
 });
 
+// Strict file filter for audio files only
+const fileFilter = (req, file, cb) => {
+  // Accept only specific audio formats
+  const validMimeTypes = [
+    'audio/mpeg',           // MP3
+    'audio/mp4',            // M4A, AAC
+    'audio/wav',            // WAV
+    'audio/x-wav',          // WAV alternate
+    'audio/ogg',            // OGG
+    'audio/flac',           // FLAC
+    'audio/x-flac'          // FLAC alternate
+  ];
+  
+  if (validMimeTypes.includes(file.mimetype)) {
+    console.log(`Accepted file upload: ${file.originalname} (${file.mimetype})`);
+    cb(null, true);
+  } else {
+    console.error(`Rejected file upload: ${file.originalname} (${file.mimetype})`);
+    cb(new Error(`Only audio files are allowed. Got: ${file.mimetype}`), false);
+  }
+};
+
+// Configure multer with strict limits
 const upload = multer({ 
   storage: storage,
-  limits: { fileSize: 25 * 1024 * 1024 }, // 25MB max file size
-  fileFilter: function(req, file, cb) {
-    // Accept only audio files
-    const filetypes = /mp3|wav|m4a|aac|ogg/;
-    
-    // Check if the mimetype starts with 'audio/' OR matches our file extensions
-    const isAudioMime = file.mimetype.startsWith('audio/');
-    const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
-    
-    console.log('File upload attempt:', {
-      filename: file.originalname,
-      mimetype: file.mimetype,
-      extension: path.extname(file.originalname).toLowerCase(),
-      isAudioMime,
-      extname
-    });
-    
-    // Accept if either the mime type is audio/* OR the file extension matches
-    if (isAudioMime || extname) {
-      return cb(null, true);
-    }
-    
-    cb(new Error('Only audio files are allowed! Supported formats: MP3, WAV, M4A, AAC, OGG'));
+  fileFilter: fileFilter,
+  limits: {
+    fileSize: 25 * 1024 * 1024, // 25MB max size
+    files: 1                    // Only one file at a time
   }
 });
 
@@ -133,10 +137,9 @@ app.post('/api/feedback', upload.single('track'), async (req, res) => {
       try {
         // Process immediately with explicit timeout catches
         console.log('Starting immediate audio analysis');
-        const songFeatures = await enhancedAudioAnalysis.extractEnhancedAudioFeatures(req.file.path);
+        const songFeatures = await audioFeatureExtractor.extractFeatures(req.file.path);
         console.log('Audio analysis complete, generating AI feedback');
         
-        const { analyzeMusicTrack } = require('./services/openaiService');
         const feedback = await analyzeMusicTrack(req.file.path, parsedReferenceArtists, songFeatures);
         
         // Clear the timeout since we completed successfully
@@ -193,7 +196,7 @@ app.post('/api/feedback/immediate', upload.single('track'), async (req, res) => 
     console.log('Extracting audio features for immediate feedback...');
     let songFeatures;
     try {
-      songFeatures = await enhancedAudioAnalysis.extractEnhancedAudioFeatures(req.file.path);
+      songFeatures = await audioFeatureExtractor.extractFeatures(req.file.path);
       console.log('Successfully extracted audio features');
     } catch (featureError) {
       console.error('Error extracting audio features:', featureError);
@@ -246,7 +249,6 @@ app.post('/api/feedback/immediate', upload.single('track'), async (req, res) => 
     
     // Use the OpenAI service for generating feedback
     try {
-      const { analyzeMusicTrack } = require('./services/openaiService');
       const feedback = await analyzeMusicTrack(req.file.path, parsedReferenceArtists, songFeatures);
       
       res.status(200).json({ feedback });
@@ -290,9 +292,9 @@ app.post('/api/analyze-track-simple', upload.single('track'), async (req, res) =
     const songFeatures = {
       tempo: 125,
       key: 'C minor',
-      energy: 0.75,
-      dynamics: 8.5,
-      mood: 'Energetic',
+      energy: 0.7,
+      dynamics: 6,
+      mood: 'Unknown',
       complexity: 'Medium'
     };
     
@@ -352,15 +354,15 @@ app.post('/api/analyze-track', upload.single('track'), async (req, res) => {
     const parsedReferenceArtists = req.body.referenceArtists ? JSON.parse(req.body.referenceArtists) : [];
     console.log('Reference artists:', parsedReferenceArtists);
     
-    // Extract audio features
-    console.log('Starting audio analysis with extracted features');
+    // Extract audio features using our robust AudioFeatureExtractor
+    console.log('Starting audio analysis with AudioFeatureExtractor');
     let songFeatures;
     
     try {
-      // Extract audio features with timeout protection
+      // Use our new robust audio feature extractor
       console.log('Extracting audio features from:', req.file.path);
-      songFeatures = await enhancedAudioAnalysis.extractEnhancedAudioFeatures(req.file.path);
-      console.log('Audio features extracted successfully');
+      songFeatures = await audioFeatureExtractor.extractFeatures(req.file.path);
+      console.log('Audio features extracted successfully:', Object.keys(songFeatures).join(', '));
     } catch (audioError) {
       console.error('Error extracting audio features:', audioError.message);
       // Create basic fallback features
@@ -375,135 +377,67 @@ app.post('/api/analyze-track', upload.single('track'), async (req, res) => {
       console.log('Using fallback audio features');
     }
     
-    // Create properly formatted prompt values, ensuring they are strings, not objects
-    const tempoValue = typeof songFeatures.tempo === 'object' ? songFeatures.tempo.value || 120 : songFeatures.tempo || 120;
-    const keyValue = typeof songFeatures.harmonic === 'object' ? songFeatures.harmonic.key || 'Unknown' : songFeatures.key || 'Unknown';
-    const energyValue = songFeatures.energy || 0.7;
-    const dynamicsValue = typeof songFeatures.dynamics === 'object' ? songFeatures.dynamics.value || 0.5 : songFeatures.dynamics || 0.5;
-    
-    // Generate prompt with properly formatted values
-    const prompt = `Analyze this electronic music track with these features: Tempo: ${tempoValue} BPM, Key: ${keyValue}, Energy: ${energyValue}, Dynamics: ${dynamicsValue} dB. ${parsedReferenceArtists.length > 0 ? 'Reference artists: ' + parsedReferenceArtists.join(', ') : 'No reference artists specified.'}`;
-    
+    // Generate professional feedback using GPT-4o with the enhanced structured prompt
     console.log('Starting OpenAI feedback generation');
-    console.log('Prompt being sent to OpenAI:', prompt);
-    
-    // Call OpenAI API
-    let feedback = null;
-    
+    let feedback;
     try {
-      // Create an abort controller for the OpenAI call
-      const controller = new AbortController();
-      const signalTimeout = setTimeout(() => {
-        console.log('OpenAI API timeout - aborting request');
-        controller.abort();
-      }, 20000); // 20 second OpenAI timeout
-      
-      // Create new instance for this request to avoid any shared state issues
-      const openai = new (require('openai').OpenAI)({
-        apiKey: process.env.OPENAI_API_KEY
-      });
-      
-      const response = await openai.chat.completions.create({
-        model: "gpt-4o",  // Using gpt-4o model as preferred by user
-        messages: [
-          {
-            role: "system",
-            content: "You are a professional music producer and mixing engineer specializing in electronic music. Provide detailed technical feedback on production quality, mixing, arrangement and sound design."
-          },
-          {
-            role: "user",
-            content: prompt
-          }
-        ],
-        temperature: 0.7,
-        max_tokens: 1000
-      }, { signal: controller.signal });
-      
-      clearTimeout(signalTimeout);
-      console.log('OpenAI API call completed successfully');
+      // Call our enhanced OpenAI service
+      const response = await analyzeMusicTrack(req.file.path, parsedReferenceArtists, songFeatures);
       
       // Process response
       const content = response.choices[0].message.content;
-      console.log('OpenAI API response content:', content.substring(0, 100) + '...');
+      console.log('OpenAI API response received, length:', content.length);
       
-      // Log the exact prompt that was sent to OpenAI
-      console.log('Full prompt sent to OpenAI:', JSON.stringify({
-        role: "user",
-        content: prompt
-      }));
-      
-      // Log the full extracted features
-      console.log('Full extracted audio features:', JSON.stringify(songFeatures));
-      
-      // Check if we got a reasonable response from OpenAI
-      if (content && content.length > 100) {
-        // Create structured feedback with the OpenAI response content
-        feedback = {
-          analysis: content,
-          technicalInsights: content, // Use the full GPT-4o response here
-          comparisonToReference: parsedReferenceArtists.length > 0 ? 
-            `Your track was compared against the styles of ${parsedReferenceArtists.join(', ')}.` : null,
-          nextSteps: "Consider the feedback above to improve your production.",
-          audioFeatures: {
-            tempo: songFeatures.tempo || 120,
-            key: songFeatures.key || 'Unknown',
-            energy: songFeatures.energy || 0.5,
-            dynamics: songFeatures.dynamics || 6
-          }
-        };
-        
-        // Log the feedback being sent to the client
-        console.log('Feedback sent to client:', {
-          analysisLength: content.length,
-          hasAudioFeatures: true,
-          successfully: true
-        });
-        
-        // Log the actual content being sent (first 200 chars)
-        console.log('Content preview:', content.substring(0, 200));
-      } else {
-        // Use our reliable backup generator if OpenAI response is too short or empty
-        console.log('OpenAI response was too short or invalid, using backup generator');
-        const basicFeedback = generateBasicFeedback(songFeatures, parsedReferenceArtists);
-        
-        console.log('Basic feedback generated:', {
-          analysisLength: basicFeedback.analysis.length,
-          hasTechnicalInsights: !!basicFeedback.technicalInsights,
-          hasNextSteps: !!basicFeedback.nextSteps
-        });
-        
-        feedback = {
-          ...basicFeedback,
-          audioFeatures: {
-            tempo: songFeatures.tempo || 120,
-            key: songFeatures.key || 'Unknown',
-            energy: songFeatures.energy || 0.5,
-            dynamics: songFeatures.dynamics || 6
-          }
-        };
-      }
-    } catch (aiError) {
-      console.error('Error generating AI feedback:', aiError.message);
-      
-      // Use our reliable backup generator for error cases too
-      console.log('Error occurred during AI feedback generation, using backup generator');
-      const basicFeedback = generateBasicFeedback(songFeatures, parsedReferenceArtists);
-      
-      console.log('Basic feedback generated:', {
-        analysisLength: basicFeedback.analysis.length,
-        hasTechnicalInsights: !!basicFeedback.technicalInsights,
-        hasNextSteps: !!basicFeedback.nextSteps
-      });
-      
+      // Structured feedback object
       feedback = {
-        ...basicFeedback,
+        analysis: content,
+        technicalInsights: content,
+        comparisonToReference: parsedReferenceArtists.length > 0 ? 
+          `Your track was compared against the styles of ${parsedReferenceArtists.join(', ')}.` : null,
+        nextSteps: "Consider the feedback above to improve your production.",
         audioFeatures: {
-          tempo: songFeatures.tempo || 120,
-          key: songFeatures.key || 'Unknown',
-          energy: songFeatures.energy || 0.5,
-          dynamics: songFeatures.dynamics || 6
+          tempo: typeof songFeatures.tempo === 'object' ? songFeatures.tempo.value || 120 : songFeatures.tempo || 120,
+          key: typeof songFeatures.key === 'object' ? songFeatures.key.name || 'Unknown' : songFeatures.key || 'Unknown',
+          energy: typeof songFeatures.energy === 'object' ? songFeatures.energy.value || 0.7 : songFeatures.energy || 0.7,
+          dynamics: typeof songFeatures.dynamics === 'object' ? songFeatures.dynamics.value || 6 : songFeatures.dynamics || 6
         }
       };
+      
+      // Log the audio features specifically for debugging
+      console.log('Audio features being sent to client:', JSON.stringify(feedback.audioFeatures));
+      
+      // Store results in Redis if available for future reference
+      if (redisManager.isReady()) {
+        const trackId = path.basename(req.file.path, path.extname(req.file.path));
+        await redisManager.set(`track:${trackId}:features`, songFeatures, 86400); // 24hr expiry
+        await redisManager.set(`track:${trackId}:feedback`, feedback, 86400); // 24hr expiry
+        console.log(`Track analysis stored in Redis with key track:${trackId}`);
+      }
+    } catch (openaiError) {
+      console.error('Error generating feedback with OpenAI:', openaiError.message);
+      
+      // Fall back to basic feedback generator if OpenAI fails
+      feedback = {
+        analysis: generateBasicFeedback(songFeatures, parsedReferenceArtists),
+        technicalInsights: generateBasicFeedback(songFeatures, parsedReferenceArtists),
+        comparisonToReference: parsedReferenceArtists.length > 0 ? 
+          `Your track was compared against the styles of ${parsedReferenceArtists.join(', ')}.` : null,
+        nextSteps: "Try the suggestions above to improve your production.",
+        audioFeatures: {
+          tempo: typeof songFeatures.tempo === 'object' ? songFeatures.tempo.value || 120 : songFeatures.tempo || 120,
+          key: typeof songFeatures.key === 'object' ? songFeatures.key.name || 'Unknown' : songFeatures.key || 'Unknown',
+          energy: typeof songFeatures.energy === 'object' ? songFeatures.energy.value || 0.7 : songFeatures.energy || 0.7,
+          dynamics: typeof songFeatures.dynamics === 'object' ? songFeatures.dynamics.value || 6 : songFeatures.dynamics || 6
+        }
+      };
+    }
+    
+    // Cleanup the uploaded file
+    try {
+      fs.unlinkSync(req.file.path);
+      console.log('Temporary file removed:', req.file.path);
+    } catch (cleanupError) {
+      console.error('Error removing temporary file:', cleanupError);
     }
     
     // Return the generated feedback
@@ -511,11 +445,74 @@ app.post('/api/analyze-track', upload.single('track'), async (req, res) => {
       message: 'Track analyzed successfully',
       feedback
     });
+    
   } catch (error) {
     console.error('Error in track analysis endpoint:', error);
     return res.status(500).json({
       error: 'Internal server error',
       message: error.message || 'An unexpected error occurred'
+    });
+  }
+});
+
+// Endpoint for testing AI feedback with sample data
+app.post('/api/debug-analyze', upload.single('track'), async (req, res) => {
+  console.log('Debug analyze endpoint called');
+  
+  try {
+    const sampleFeatures = {
+      title: "Sample Track",
+      tempo: 128,
+      key: "C Minor",
+      energy: 0.85,
+      dynamics: 7,
+      loudness: {
+        value: -8.2,
+        peak: -0.7
+      },
+      spectralBalance: "Well balanced with slightly boosted low-mids",
+      complexity: "Medium-High",
+      mood: "Energetic"
+    };
+    
+    // Get reference artists from request
+    const parsedReferenceArtists = req.body.referenceArtists ? JSON.parse(req.body.referenceArtists) : ["Disclosure", "Fred Again"];
+    console.log('Debug with reference artists:', parsedReferenceArtists);
+    
+    console.log('Starting OpenAI debug feedback generation');
+    const response = await analyzeMusicTrack(
+      req.file ? req.file.path : null, 
+      parsedReferenceArtists, 
+      sampleFeatures
+    );
+    
+    // Always clean up any uploaded file
+    if (req.file) {
+      try {
+        fs.unlinkSync(req.file.path);
+        console.log('Temporary debug file removed');
+      } catch (cleanupError) {
+        console.error('Error removing debug temporary file:', cleanupError);
+      }
+    }
+    
+    // Return the generated feedback
+    return res.status(200).json({
+      message: 'Debug analysis completed',
+      feedback: {
+        analysis: response.choices[0].message.content,
+        technicalInsights: response.choices[0].message.content,
+        comparisonToReference: parsedReferenceArtists.length > 0 ? 
+          `Your track was compared against the styles of ${parsedReferenceArtists.join(', ')}.` : null,
+        nextSteps: "These are debug suggestions to improve your production.",
+        audioFeatures: sampleFeatures
+      }
+    });
+  } catch (error) {
+    console.error('Error in debug analyze endpoint:', error);
+    return res.status(500).json({
+      error: 'Internal server error',
+      message: error.message || 'An unexpected error occurred in debug endpoint'
     });
   }
 });
@@ -591,6 +588,121 @@ app.post('/api/analyze-track-debug', upload.single('track'), async (req, res) =>
       message: error.message || 'An unexpected error occurred'
     });
   }
+});
+
+// Debug endpoint to verify API connections and credentials
+app.get('/api/system-check', async (req, res) => {
+  console.log('System check initiated');
+  
+  try {
+    // Check system configuration 
+    const checks = {
+      env: {
+        node_env: process.env.NODE_ENV || 'not set',
+        port: process.env.PORT || '5002 (default)',
+        openai_key: process.env.OPENAI_API_KEY ? 
+          `${process.env.OPENAI_API_KEY.substring(0, 3)}...${process.env.OPENAI_API_KEY.substring(process.env.OPENAI_API_KEY.length - 4)}` 
+          : 'MISSING',
+        openai_key_valid: process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.startsWith('sk-')
+      },
+      filesystem: {
+        uploads_dir: fs.existsSync(uploadDir),
+        uploads_writable: await isDirectoryWritable(uploadDir)
+      },
+      connectivity: {
+        openai_reachable: false
+      }
+    };
+    
+    // Check OpenAI connectivity if key is present
+    if (checks.env.openai_key_valid) {
+      try {
+        const { OpenAI } = require('openai');
+        const openai = new OpenAI({
+          apiKey: process.env.OPENAI_API_KEY,
+        });
+        
+        // Minimal API call to test connectivity
+        const response = await openai.chat.completions.create({
+          model: "gpt-3.5-turbo", // Use the most basic model for this test
+          messages: [{ role: "user", content: "Quick test to verify API key works." }],
+          max_tokens: 5
+        });
+        
+        checks.connectivity.openai_reachable = response && response.choices && response.choices.length > 0;
+        checks.connectivity.openai_response = 'Valid response received';
+      } catch (apiError) {
+        checks.connectivity.openai_error = apiError.message;
+      }
+    }
+    
+    // Check overall system health
+    const systemOk = checks.env.openai_key_valid && 
+                     checks.filesystem.uploads_dir && 
+                     checks.filesystem.uploads_writable;
+    
+    return res.json({
+      status: systemOk ? 'OK' : 'ISSUES_DETECTED',
+      checks,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('System check failed:', error);
+    return res.status(500).json({
+      status: 'ERROR',
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
+// Helper function to check if a directory is writable
+async function isDirectoryWritable(directory) {
+  const testFile = path.join(directory, `.write-test-${Date.now()}.tmp`);
+  try {
+    fs.writeFileSync(testFile, 'test');
+    fs.unlinkSync(testFile);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+// Global error handler for unhandled server errors
+app.use((err, req, res, next) => {
+  console.error('Unhandled server error:', err);
+  
+  // Log detailed error information
+  console.error({
+    message: err.message,
+    stack: err.stack,
+    endpoint: req.originalUrl,
+    method: req.method,
+    body: req.body,
+    params: req.params,
+    query: req.query,
+    time: new Date().toISOString()
+  });
+  
+  // Clean up any uploaded files to prevent disk space issues
+  if (req.file && req.file.path) {
+    try {
+      fs.unlinkSync(req.file.path);
+      console.log('Cleaned up uploaded file after error:', req.file.path);
+    } catch (cleanupErr) {
+      console.error('Error cleaning up file:', cleanupErr);
+    }
+  }
+  
+  // Send appropriate error response
+  res.status(500).json({
+    error: 'Server error',
+    message: process.env.NODE_ENV === 'production' 
+      ? 'An unexpected error occurred. Our team has been notified.' 
+      : err.message,
+    endpoint: req.originalUrl,
+    code: err.code || 'INTERNAL_ERROR'
+  });
 });
 
 // Simple feedback generation function with signal for abortion
@@ -669,6 +781,12 @@ if (process.env.NODE_ENV === 'production') {
   });
 }
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+// Start server if not imported as a module (for Vercel serverless deployment)
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}
+
+// Export the Express app for serverless environments
+module.exports = app;

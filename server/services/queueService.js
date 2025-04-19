@@ -1,420 +1,178 @@
-const { Queue, Worker } = require('bullmq');
-const Redis = require('ioredis');
-const path = require('path');
-const { extractEnhancedAudioFeatures } = require('./enhancedAudioAnalysis');
-const { analyzeMusicTrack } = require('./openaiService');
+const { v4: uuidv4 } = require('uuid');
+const { analyzeMusicTrack } = require('./enhancedOpenAI');
+const audioFeatureExtractor = require('./AudioFeatureExtractor');
+const redisManager = require('./redisManager');
 
-// Flag to track Redis connection status
-let redisAvailable = false;
-let redisConnection = null;
-
-// Try to connect to Redis, but handle failures gracefully
-try {
-  // Redis connection for BullMQ
-  redisConnection = new Redis({
-    host: process.env.REDIS_HOST || 'localhost',
-    port: process.env.REDIS_PORT || 6379,
-    maxRetriesPerRequest: 1, // Reduce retry attempts
-    retryStrategy: (times) => {
-      // No retry, fail immediately
-      console.log('Redis connection failed, giving up immediately');
-      return false; // Don't retry
-    },
-    connectTimeout: 1000, // Shorter timeout for faster failure
-  });
-
-  redisConnection.on('connect', () => {
-    console.log('Successfully connected to Redis');
-    redisAvailable = true;
-  });
-
-  redisConnection.on('error', (err) => {
-    console.warn('Redis connection error:', err.message);
-    redisAvailable = false;
-    if (redisConnection) {
-      redisConnection.disconnect();
-    }
-  });
-} catch (error) {
-  console.warn('Failed to initialize Redis connection:', error.message);
-  redisAvailable = false;
-}
-
-// Only create queues if Redis is available
-let audioProcessingQueue, feedbackGenerationQueue;
-let audioProcessingWorker, feedbackGenerationWorker;
-
-function initializeQueueIfPossible() {
-  if (redisAvailable && redisConnection) {
-    try {
-      // Create queues for audio processing
-      audioProcessingQueue = new Queue('audioProcessing', { connection: redisConnection });
-      feedbackGenerationQueue = new Queue('feedbackGeneration', { connection: redisConnection });
-
-      // Initialize workers to process jobs
-      audioProcessingWorker = new Worker('audioProcessing', async job => {
-        console.log(`[Worker] Processing audio analysis for track: ${job.data.trackId}`);
-        
-        try {
-          // Extract audio features
-          const features = await extractEnhancedAudioFeatures(job.data.trackPath);
-          
-          // Store the features for reference
-          console.log(`[Worker] Features extracted for track: ${job.data.trackId}`);
-          
-          // If reference artists are provided, compare with them
-          if (job.data.referenceArtists && job.data.referenceArtists.length > 0) {
-            const comparisons = await compareWithReferenceTracks(features, job.data.referenceArtists);
-            features.comparisons = comparisons;
-          }
-          
-          // Queue feedback generation
-          await feedbackGenerationQueue.add('generateFeedback', {
-            trackId: job.data.trackId,
-            trackPath: job.data.trackPath,
-            features: features,
-            referenceArtists: job.data.referenceArtists,
-            originalJobId: job.id,
-            userId: job.data.userId
-          });
-          
-          // Return the features
-          return { features };
-        } catch (error) {
-          console.error(`[Worker] Error processing audio: ${error}`);
-          throw new Error(`Audio processing failed: ${error.message}`);
-        }
-      }, { connection: redisConnection });
-
-      audioProcessingWorker.on('completed', (job, result) => {
-        console.log(`Audio processing completed for job ${job.id}`);
-      });
-
-      audioProcessingWorker.on('failed', (job, err) => {
-        console.error(`Audio processing failed for job ${job.id}:`, err);
-      });
-
-      feedbackGenerationWorker = new Worker('feedbackGeneration', async job => {
-        console.log(`[Worker] Generating feedback for track: ${job.data.trackId}`);
-        
-        try {
-          // Generate feedback using OpenAI
-          const feedback = await analyzeMusicTrack(
-            job.data.trackPath,
-            job.data.referenceArtists,
-            job.data.features
-          );
-          
-          console.log(`[Worker] Feedback generated for track: ${job.data.trackId}`);
-          
-          // Return the complete results
-          return {
-            trackId: job.data.trackId,
-            feedback: feedback
-          };
-        } catch (error) {
-          console.error(`[Worker] Error generating feedback: ${error}`);
-          throw new Error(`Feedback generation failed: ${error.message}`);
-        }
-      }, { connection: redisConnection });
-
-      feedbackGenerationWorker.on('completed', (job, result) => {
-        console.log(`Feedback generation completed for job ${job.id}`);
-        
-        // Here we would notify the client that their results are ready
-        // This could be via WebSockets, server-sent events, or polling
-      });
-
-      feedbackGenerationWorker.on('failed', (job, err) => {
-        console.error(`Feedback generation failed for job ${job.id}:`, err);
-      });
-
-      console.log('Queue services initialized successfully');
-      return true;
-    } catch (error) {
-      console.error('Failed to initialize queue services:', error);
-      return false;
-    }
-  }
-  return false;
-}
+// In-memory queue for fallback when Redis is unavailable
+const memoryQueue = [];
 
 /**
- * Queue a track for audio analysis and feedback generation
- * @param {string} trackPath Path to the audio file
- * @param {Array} referenceArtists Reference artists selected by the user
- * @param {string} userId User ID
- * @returns {Promise<Object>} Job information
+ * Queue a track for analysis
+ * @param {string} trackPath Path to the uploaded track
+ * @param {Array} referenceArtists List of reference artists
+ * @returns {Object} Job metadata
  */
-async function queueTrackAnalysis(trackPath, referenceArtists = [], userId = 'anonymous') {
-  const trackId = path.basename(trackPath, path.extname(trackPath));
-  
-  // If Redis is not available, return an error that we'll go with immediate processing
-  if (!redisAvailable) {
-    console.warn('Redis not available. Queue functionality disabled.');
-    throw new Error('QUEUE_UNAVAILABLE');
-  }
-  
-  // Initialize the queue if not already done
-  if (!audioProcessingQueue) {
-    const initialized = initializeQueueIfPossible();
-    if (!initialized) {
-      throw new Error('QUEUE_INITIALIZATION_FAILED');
-    }
-  }
-  
-  // Add job to the audio processing queue
-  const job = await audioProcessingQueue.add('analyzeTrack', {
-    trackId,
+async function queueTrackAnalysis(trackPath, referenceArtists = []) {
+  const jobId = uuidv4();
+  const job = {
+    id: jobId,
     trackPath,
     referenceArtists,
-    userId
-  });
-  
-  console.log(`Queued track analysis job: ${job.id}`);
-  
-  return {
-    jobId: job.id,
-    trackId
+    status: 'queued',
+    createdAt: new Date().toISOString()
   };
-}
 
-/**
- * Compare track features with reference tracks
- * @param {Object} trackFeatures Features of the user's track
- * @param {Array} referenceArtists List of reference artists
- * @returns {Promise<Object>} Comparison results
- */
-async function compareWithReferenceTracks(trackFeatures, referenceArtists) {
-  // In a production system, we would fetch pre-computed features for these artists
-  // For this demo, we'll simulate reference track features
-  
-  const referenceFeatures = getReferenceArtistsFeatures(referenceArtists);
-  
-  // Calculate delta metrics
-  const tempoComparison = trackFeatures.tempo ? {
-    value: trackFeatures.tempo.value,
-    reference_avg: calculateAverage(referenceFeatures.map(r => r.tempo)),
-    delta: trackFeatures.tempo.value - calculateAverage(referenceFeatures.map(r => r.tempo))
-  } : null;
-  
-  const loudnessComparison = trackFeatures.loudness ? {
-    value: trackFeatures.loudness.value,
-    reference_avg: calculateAverage(referenceFeatures.map(r => r.loudness)),
-    delta: trackFeatures.loudness.value - calculateAverage(referenceFeatures.map(r => r.loudness))
-  } : null;
-  
-  const dynamicsComparison = trackFeatures.dynamics ? {
-    value: trackFeatures.dynamics.value,
-    reference_avg: calculateAverage(referenceFeatures.map(r => r.dynamics)),
-    delta: trackFeatures.dynamics.value - calculateAverage(referenceFeatures.map(r => r.dynamics))
-  } : null;
-  
-  // Calculate overall similarity score (0-100)
-  const similarityScore = calculateSimilarityScore(trackFeatures, referenceFeatures);
-  
-  return {
-    tempo: tempoComparison,
-    loudness: loudnessComparison,
-    dynamics: dynamicsComparison,
-    similarity_score: similarityScore,
-    closest_match: getClosestMatch(trackFeatures, referenceFeatures, referenceArtists)
-  };
-}
-
-/**
- * Get reference features for selected artists
- * @param {Array} referenceArtists List of artist names
- * @returns {Array} Features for reference artists
- */
-function getReferenceArtistsFeatures(referenceArtists) {
-  // This would fetch from a database in production
-  // For demonstration, we'll return simulated data
-  
-  // Map of simulated artist features
-  const artistFeatures = {
-    // Techno artists
-    'Ben Klock': { 
-      tempo: 132, 
-      loudness: -12, 
-      dynamics: 6.2,
-      spectralBalance: 0.82,
-      complexity: 0.65,
-      key: 'F minor'
-    },
-    'Marcel Dettmann': { 
-      tempo: 135, 
-      loudness: -11.5, 
-      dynamics: 5.8,
-      spectralBalance: 0.76,
-      complexity: 0.72,
-      key: 'C minor'
-    },
-    'Nina Kraviz': { 
-      tempo: 128, 
-      loudness: -10.8, 
-      dynamics: 7.1,
-      spectralBalance: 0.79,
-      complexity: 0.68,
-      key: 'G minor'
-    },
-    
-    // Experimental artists
-    'Aphex Twin': { 
-      tempo: 125, 
-      loudness: -14.2, 
-      dynamics: 8.4,
-      spectralBalance: 0.86,
-      complexity: 0.91,
-      key: 'B minor'
-    },
-    'Four Tet': { 
-      tempo: 122, 
-      loudness: -13.1, 
-      dynamics: 7.6,
-      spectralBalance: 0.84,
-      complexity: 0.82,
-      key: 'D minor'
-    },
-    'Jon Hopkins': { 
-      tempo: 118, 
-      loudness: -12.7, 
-      dynamics: 8.9,
-      spectralBalance: 0.88,
-      complexity: 0.85,
-      key: 'A minor'
-    },
-    
-    // Default for unknown artists
-    'default': { 
-      tempo: 125, 
-      loudness: -12, 
-      dynamics: 7,
-      spectralBalance: 0.8,
-      complexity: 0.7,
-      key: 'A minor'
+  try {
+    // Use Redis if available, otherwise use in-memory queue
+    if (redisManager.isReady()) {
+      // Store job data in Redis
+      await redisManager.set(`job:${jobId}`, job);
+      // Add job ID to processing queue
+      await redisManager.addToList('track_queue', jobId);
+      console.log(`Job ${jobId} added to Redis queue`);
+      
+      // Start Redis queue processor if not already running
+      startRedisQueueProcessor();
+    } else {
+      // Use in-memory queue
+      memoryQueue.push(job);
+      console.log(`Job ${jobId} added to memory queue (Redis unavailable)`);
+      
+      // Process immediately when using memory queue
+      processNextInMemoryQueue();
     }
-  };
-  
-  // Return features for the selected artists, or default if not found
-  return referenceArtists.map(artist => 
-    artistFeatures[artist] || artistFeatures['default']
-  );
+
+    return {
+      jobId,
+      status: 'queued',
+      message: redisManager.isReady() ? 
+        'Track queued for analysis with Redis' : 
+        'Track queued for analysis (using in-memory queue)'
+    };
+  } catch (error) {
+    console.error('Error queueing job:', error);
+    return {
+      jobId,
+      status: 'error',
+      message: `Failed to queue track: ${error.message}`
+    };
+  }
 }
 
-/**
- * Calculate simple average of an array of numbers
- * @param {Array} values Array of numbers
- * @returns {number} Average value
- */
-function calculateAverage(values) {
-  return values.reduce((a, b) => a + b, 0) / values.length;
-}
+// Redis queue processor flag and counter
+let redisProcessorRunning = false;
+let processingCount = 0;
 
 /**
- * Calculate similarity score between user track and reference tracks
- * @param {Object} trackFeatures User track features
- * @param {Array} referenceFeatures Reference track features
- * @returns {number} Similarity score (0-100)
+ * Start the Redis queue processor if not already running
  */
-function calculateSimilarityScore(trackFeatures, referenceFeatures) {
-  // In a real system, this would use vector similarity
-  // Here we'll use a simple weighted average of feature differences
-  
-  let score = 0;
-  let totalWeight = 0;
-  
-  // Compare tempo if available
-  if (trackFeatures.tempo && trackFeatures.tempo.value) {
-    const refTempoAvg = calculateAverage(referenceFeatures.map(r => r.tempo));
-    const tempoDiff = Math.abs(trackFeatures.tempo.value - refTempoAvg) / refTempoAvg;
-    // Closer tempo = higher score (max 25 points)
-    score += 25 * (1 - Math.min(tempoDiff, 0.5) / 0.5);
-    totalWeight += 25;
+async function startRedisQueueProcessor() {
+  if (redisProcessorRunning) {
+    return;
   }
   
-  // Compare loudness if available
-  if (trackFeatures.loudness && trackFeatures.loudness.value) {
-    const refLoudnessAvg = calculateAverage(referenceFeatures.map(r => r.loudness));
-    const loudnessDiff = Math.abs(trackFeatures.loudness.value - refLoudnessAvg) / Math.abs(refLoudnessAvg);
-    // Closer loudness = higher score (max 25 points)
-    score += 25 * (1 - Math.min(loudnessDiff, 0.3) / 0.3);
-    totalWeight += 25;
-  }
+  redisProcessorRunning = true;
+  console.log('Redis queue processor started');
   
-  // Compare dynamics if available
-  if (trackFeatures.dynamics && trackFeatures.dynamics.value) {
-    const refDynamicsAvg = calculateAverage(referenceFeatures.map(r => r.dynamics));
-    const dynamicsDiff = Math.abs(trackFeatures.dynamics.value - refDynamicsAvg) / refDynamicsAvg;
-    // Closer dynamics = higher score (max 25 points)
-    score += 25 * (1 - Math.min(dynamicsDiff, 0.5) / 0.5);
-    totalWeight += 25;
+  try {
+    while (redisManager.isReady()) {
+      // Get next job ID from queue
+      const jobId = await redisManager.client.lPop('track_queue');
+      
+      if (!jobId) {
+        // No more jobs, sleep before checking again
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        continue;
+      }
+      
+      // Process the job
+      processingCount++;
+      console.log(`Processing job ${jobId} from Redis queue (${processingCount} active)`);
+      
+      // Get job data
+      const job = await redisManager.get(`job:${jobId}`, true);
+      if (!job) {
+        console.error(`Job ${jobId} data not found in Redis`);
+        continue;
+      }
+      
+      // Update job status
+      job.status = 'processing';
+      await redisManager.set(`job:${jobId}`, job);
+      
+      try {
+        // Extract audio features
+        const songFeatures = await audioFeatureExtractor.extractFeatures(job.trackPath);
+        
+        // Generate AI feedback
+        const feedback = await analyzeMusicTrack(job.trackPath, job.referenceArtists, songFeatures);
+        
+        // Update job with results
+        job.status = 'completed';
+        job.result = feedback;
+        job.completedAt = new Date().toISOString();
+        
+        // Store results
+        await redisManager.set(`job:${jobId}`, job);
+        console.log(`Job ${jobId} completed successfully`);
+      } catch (error) {
+        console.error(`Error processing job ${jobId}:`, error);
+        job.status = 'failed';
+        job.error = error.message;
+        await redisManager.set(`job:${jobId}`, job);
+      }
+      
+      processingCount--;
+    }
+  } catch (error) {
+    console.error('Redis queue processor error:', error);
+  } finally {
+    redisProcessorRunning = false;
+    processingCount = 0;
+    console.log('Redis queue processor stopped');
   }
-  
-  // Compare spectral balance if available
-  if (trackFeatures.mixBalance && trackFeatures.mixBalance.value) {
-    const refBalanceAvg = calculateAverage(referenceFeatures.map(r => r.spectralBalance));
-    const balanceDiff = Math.abs(trackFeatures.mixBalance.value - refBalanceAvg) / refBalanceAvg;
-    // Closer spectral balance = higher score (max 25 points)
-    score += 25 * (1 - Math.min(balanceDiff, 0.5) / 0.5);
-    totalWeight += 25;
-  }
-  
-  // Normalize score to 0-100
-  return totalWeight > 0 ? Math.round(score / totalWeight * 100) : 50;
 }
 
 /**
- * Find the closest matching reference artist
- * @param {Object} trackFeatures User track features
- * @param {Array} referenceFeatures Reference track features
- * @param {Array} referenceArtists Reference artist names
- * @returns {Object} Closest match information
+ * Process the next item in the in-memory queue
  */
-function getClosestMatch(trackFeatures, referenceFeatures, referenceArtists) {
-  let closestArtist = null;
-  let closestScore = -1;
+async function processNextInMemoryQueue() {
+  if (memoryQueue.length === 0) return;
   
-  // Calculate similarity with each reference artist
-  referenceFeatures.forEach((refFeature, index) => {
-    const artistName = referenceArtists[index];
-    
-    // Simple feature difference scoring (would be more sophisticated in production)
-    let similarity = 0;
-    let count = 0;
-    
-    // Compare tempo
-    if (trackFeatures.tempo && trackFeatures.tempo.value) {
-      const tempoDiff = Math.abs(trackFeatures.tempo.value - refFeature.tempo) / refFeature.tempo;
-      similarity += (1 - Math.min(tempoDiff, 0.5) / 0.5);
-      count++;
-    }
-    
-    // Compare loudness
-    if (trackFeatures.loudness && trackFeatures.loudness.value) {
-      const loudnessDiff = Math.abs(trackFeatures.loudness.value - refFeature.loudness) / Math.abs(refFeature.loudness);
-      similarity += (1 - Math.min(loudnessDiff, 0.3) / 0.3);
-      count++;
-    }
-    
-    // Normalize score
-    const score = count > 0 ? similarity / count : 0;
-    
-    // Keep track of closest match
-    if (score > closestScore) {
-      closestScore = score;
-      closestArtist = artistName;
-    }
-  });
+  const job = memoryQueue[0]; // Get first job but don't remove yet
   
-  return {
-    artist: closestArtist,
-    score: Math.round(closestScore * 100)
-  };
+  try {
+    console.log(`Processing job ${job.id} from memory queue`);
+    job.status = 'processing';
+    
+    // Extract features using our new robust extractor
+    const songFeatures = await audioFeatureExtractor.extractFeatures(job.trackPath);
+    
+    // Generate AI feedback
+    const feedback = await analyzeMusicTrack(job.trackPath, job.referenceArtists, songFeatures);
+    
+    // Update job with results
+    job.status = 'completed';
+    job.result = feedback;
+    job.completedAt = new Date().toISOString();
+    
+    console.log(`Job ${job.id} completed successfully`);
+  } catch (error) {
+    console.error(`Error processing job ${job.id}:`, error);
+    job.status = 'failed';
+    job.error = error.message;
+  }
+  
+  // Remove job from queue (whether successful or failed)
+  memoryQueue.shift();
+  
+  // Process next job if available
+  if (memoryQueue.length > 0) {
+    processNextInMemoryQueue();
+  }
 }
 
+// Export functions
 module.exports = {
-  queueTrackAnalysis,
-  audioProcessingQueue,
-  feedbackGenerationQueue
+  queueTrackAnalysis
 };

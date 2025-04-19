@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   Box, 
   Button, 
@@ -123,6 +123,8 @@ const TrackUploader = ({ onFeedbackReceived, onError, onUploadStart }) => {
   const [selectedArtists, setSelectedArtists] = useState([]);
   const [error, setError] = useState('');
   const [isUploading, setIsUploading] = useState(false);
+  const [systemStatus, setSystemStatus] = useState('unknown');
+  const [errorMessage, setErrorMessage] = useState('');
   const fileInputRef = useRef(null);
   const theme = useTheme();
 
@@ -190,8 +192,11 @@ const TrackUploader = ({ onFeedbackReceived, onError, onUploadStart }) => {
         formData.append('referenceArtists', JSON.stringify(artistNames));
       }
 
-      // Switch back to the main production endpoint with error handling
-      const response = await fetch('http://localhost:5001/api/analyze-track', {
+      const apiUrl = process.env.NODE_ENV === 'production' 
+        ? '/api/analyze-track'  // In production, use relative path
+        : 'http://localhost:5002/api/analyze-track'; // In development, use full URL
+        
+      const response = await fetch(apiUrl, {
         method: 'POST',
         body: formData,
       });
@@ -217,6 +222,34 @@ const TrackUploader = ({ onFeedbackReceived, onError, onUploadStart }) => {
       if (onError) onError(error.message);
     }
   };
+
+  // Check system status on component mount
+  useEffect(() => {
+    const checkSystemStatus = async () => {
+      try {
+        const response = await fetch('http://localhost:5002/api/system-check');
+        if (response.ok) {
+          const data = await response.json();
+          setSystemStatus(data.status);
+          
+          // If we have system issues, show appropriate error
+          if (data.status !== 'OK') {
+            console.warn('System check failed:', data.checks);
+            setErrorMessage('System configuration issue detected. Please contact support.');
+          }
+        } else {
+          setSystemStatus('ERROR');
+          setErrorMessage('Unable to connect to the server. Is it running?');
+        }
+      } catch (error) {
+        console.error('System check error:', error);
+        setSystemStatus('ERROR');
+        setErrorMessage('Server connection failed. Please ensure the server is running on port 5002.');
+      }
+    };
+
+    checkSystemStatus();
+  }, []);
 
   return (
     <motion.div
@@ -320,6 +353,18 @@ const TrackUploader = ({ onFeedbackReceived, onError, onUploadStart }) => {
           </motion.div>
         )}
 
+        {errorMessage && (
+          <motion.div 
+            variants={itemVariants}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+          >
+            <Alert severity="error" sx={{ mt: 2 }}>
+              {errorMessage}
+            </Alert>
+          </motion.div>
+        )}
+
         <motion.div variants={itemVariants}>
           <Box sx={{ my: 3 }}>
             <Divider>
@@ -384,7 +429,7 @@ const TrackUploader = ({ onFeedbackReceived, onError, onUploadStart }) => {
               color="primary"
               size="large"
               onClick={handleSubmit}
-              disabled={!selectedFile || isUploading}
+              disabled={!selectedFile || isUploading || systemStatus === 'ERROR'}
               startIcon={isUploading ? <CircularProgress size={20} color="inherit" /> : null}
               sx={{ 
                 minWidth: 200, 

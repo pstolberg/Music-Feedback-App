@@ -24,6 +24,7 @@ import InsightsIcon from '@mui/icons-material/Insights';
 import VolumeUpIcon from '@mui/icons-material/VolumeUp';
 import TuneIcon from '@mui/icons-material/Tune';
 import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
+import ReactMarkdown from 'react-markdown';
 
 // Animation variants
 const containerVariants = {
@@ -168,97 +169,118 @@ const FeedbackDisplay = ({ feedback, loading, error, onReset, trackInfo, selecte
     }
   }, [loading, feedback]);
 
-  // Format feedback sections for display
-  const formatFeedbackSection = (text) => {
-    if (!text) {
-      console.log("Received empty text content for formatting");
-      return <Typography variant="body1">No detailed analysis available for this track. Please try uploading again.</Typography>;
-    }
+  // Parse and render markdown feedback
+  const renderFeedback = () => {
+    if (!feedback) return null;
     
-    console.log("Formatting feedback text length:", text.length);
-    console.log("Formatting feedback text preview:", text.substring(0, 100) + "...");
-    
-    // Always return at least the raw text if parsing fails
     try {
-      // Simple paragraph formatting for GPT-4o response format
-      if (!text.includes('#') && !text.includes('*')) {
-        return text.split('\n').map((line, i) => {
-          // Handle GPT-4o's response format with heading-like sentences without markdown
-          if (line.match(/^(Analysis|Overview|Mix|Arrangement|Sound Design|Dynamics|Technical|Comparison|Recommendations|Next Steps):/i)) {
-            return (
-              <Typography key={i} variant="h6" sx={{ mt: 2, mb: 1, fontWeight: 'medium' }}>
-                {line}
-              </Typography>
-            );
-          } else if (line.trim() === '') {
-            return <Box key={i} sx={{ height: '0.5em' }} />;
-          } else {
-            return <Typography key={i} variant="body1" paragraph>{line}</Typography>;
-          }
-        });
+      // Handle different response structures gracefully
+      let analysisContent = '';
+      
+      // Check if feedback is in an object format with nested properties
+      if (feedback.feedback && typeof feedback.feedback === 'object') {
+        // New structured format from enhanced API
+        analysisContent = feedback.feedback.analysis || '';
+        if (!analysisContent && feedback.feedback.technicalInsights) {
+          analysisContent = feedback.feedback.technicalInsights;
+        }
+      } 
+      // Handle direct feedback object structure
+      else if (typeof feedback === 'object') {
+        if (feedback.analysis) {
+          analysisContent = feedback.analysis;
+        } else if (feedback.choices && feedback.choices[0] && feedback.choices[0].message) {
+          // Direct OpenAI response format
+          analysisContent = feedback.choices[0].message.content;
+        }
       }
       
-      // Split the text by headings
-      const lines = text.split('\n');
-      console.log(`Formatting ${lines.length} lines of text`);
-      
-      const formattedLines = lines.map((line, i) => {
-        if (line.match(/^#+\s/)) {
-          // This is a heading
-          const level = line.match(/^(#+)/)[0].length;
-          const headingText = line.replace(/^#+\s/, '');
-          
-          return (
-            <Typography
-              key={i}
-              variant={level === 1 ? 'h4' : level === 2 ? 'h5' : 'h6'}
-              gutterBottom
-              sx={{ 
-                mt: 3, 
-                mb: 2, 
-                fontWeight: 'bold',
-                color: theme.palette.primary.main
-              }}
-            >
-              {headingText}
-            </Typography>
-          );
-        } else if (line.match(/^\*\s/)) {
-          // This is a bullet point
-          const bulletText = line.replace(/^\*\s/, '');
-          return (
-            <Box key={i} sx={{ display: 'flex', mb: 1 }}>
-              <Box sx={{ mr: 1, mt: 0.5 }}>•</Box>
-              <Typography variant="body1">{bulletText}</Typography>
-            </Box>
-          );
-        } else if (line.trim() === '') {
-          // Empty line
-          return <Box key={i} sx={{ height: '0.5em' }} />;
-        } else {
-          // Regular paragraph
-          return <Typography key={i} variant="body1" paragraph>{line}</Typography>;
+      // If still no content, try to stringify the feedback as a last resort
+      if (!analysisContent && feedback) {
+        try {
+          analysisContent = typeof feedback === 'string' 
+            ? feedback 
+            : JSON.stringify(feedback, null, 2);
+        } catch (e) {
+          analysisContent = "Feedback received but could not be parsed properly.";
         }
-      });
+      }
       
-      return formattedLines;
-    } catch (error) {
-      console.error("Error formatting feedback:", error);
-      // Return the raw text as a fallback
+      // Log the final content being displayed for debugging
+      console.log('Rendering feedback content, length:', analysisContent.length);
+      
       return (
-        <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap' }}>
-          {text}
-        </Typography>
+        <div className="feedback-content">
+          <ReactMarkdown children={analysisContent} />
+        </div>
+      );
+    } catch (error) {
+      console.error("Error rendering feedback:", error);
+      return (
+        <div className="feedback-error">
+          <h3>Error Displaying Feedback</h3>
+          <p>There was an issue rendering the feedback. Please try again or contact support.</p>
+          <pre>{error.message}</pre>
+        </div>
       );
     }
   };
 
   // Get audio parameters from feedback for visualization
   const getAudioParams = () => {
-    if (!feedback || !feedback.audioFeatures) return null;
+    if (!feedback) {
+      console.log("No feedback object available");
+      return null;
+    }
     
-    const { audioFeatures } = feedback;
+    // Debug: log the entire feedback object to see its structure
+    console.log("Feedback object structure:", feedback);
     
+    // Handle different response structures - check both possible locations
+    let audioFeatures = null;
+    
+    if (feedback.audioFeatures) {
+      console.log("Found audioFeatures directly in feedback object:", feedback.audioFeatures);
+      audioFeatures = feedback.audioFeatures;
+    } else if (feedback.feedback && feedback.feedback.audioFeatures) {
+      console.log("Found audioFeatures in nested feedback.feedback:", feedback.feedback.audioFeatures);
+      audioFeatures = feedback.feedback.audioFeatures;
+    } else {
+      console.log("No audioFeatures found in feedback object");
+      // Create placeholder metrics if none are available
+      return [
+        { 
+          title: 'BPM', 
+          value: 'N/A',
+          description: 'Track tempo in beats per minute',
+          icon: <TuneIcon />,
+          color: 'primary'
+        },
+        { 
+          title: 'Key', 
+          value: 'N/A',
+          description: 'Detected musical key',
+          icon: <MusicNoteIcon />,
+          color: 'secondary'
+        },
+        { 
+          title: 'Dynamics', 
+          value: 'N/A',
+          description: 'Dynamic range of the track',
+          icon: <VolumeUpIcon />,
+          color: 'success'
+        },
+        { 
+          title: 'Energy', 
+          value: 'N/A',
+          description: 'Perceived energy level',
+          icon: <InsightsIcon />,
+          color: 'warning'
+        }
+      ];
+    }
+    
+    // Extract values with robust null checking
     return [
       { 
         title: 'BPM', 
@@ -276,14 +298,22 @@ const FeedbackDisplay = ({ feedback, loading, error, onReset, trackInfo, selecte
       },
       { 
         title: 'Dynamics', 
-        value: audioFeatures.dynamics ? `${audioFeatures.dynamics.toFixed(1)} dB` : 'N/A',
+        value: audioFeatures.dynamics ? 
+          (typeof audioFeatures.dynamics === 'object' ? 
+            `${audioFeatures.dynamics.value?.toFixed(1) || 'N/A'} dB` : 
+            `${audioFeatures.dynamics.toFixed(1)} dB`) : 
+          'N/A',
         description: 'Dynamic range of the track',
         icon: <VolumeUpIcon />,
         color: 'success'
       },
       { 
         title: 'Energy', 
-        value: audioFeatures.energy ? `${Math.round(audioFeatures.energy * 100)}%` : 'N/A',
+        value: audioFeatures.energy ? 
+          (typeof audioFeatures.energy === 'object' ? 
+            `${Math.round((audioFeatures.energy.value || 0) * 100)}%` : 
+            `${Math.round(audioFeatures.energy * 100)}%`) : 
+          'N/A',
         description: 'Perceived energy level',
         icon: <InsightsIcon />,
         color: 'warning'
@@ -530,23 +560,21 @@ const FeedbackDisplay = ({ feedback, loading, error, onReset, trackInfo, selecte
                     </Divider>
                   </motion.div>
                     
-                  {feedback.audioFeatures && (
-                    <motion.div variants={itemVariants}>
-                      <Grid container spacing={3} sx={{ mb: 4 }}>
-                        {getAudioParams()?.map((param, index) => (
-                          <Grid item xs={12} sm={6} md={3} key={index}>
-                            <MetricCard 
-                              title={param.title} 
-                              value={param.value} 
-                              description={param.description} 
-                              icon={param.icon}
-                              color={param.color}
-                            />
-                          </Grid>
-                        ))}
-                      </Grid>
-                    </motion.div>
-                  )}
+                  <motion.div variants={itemVariants}>
+                    <Grid container spacing={3} sx={{ mb: 4 }}>
+                      {getAudioParams()?.map((param, index) => (
+                        <Grid item xs={12} sm={6} md={3} key={index}>
+                          <MetricCard 
+                            title={param.title} 
+                            value={param.value} 
+                            description={param.description} 
+                            icon={param.icon}
+                            color={param.color}
+                          />
+                        </Grid>
+                      ))}
+                    </Grid>
+                  </motion.div>
                   
                   <motion.div variants={itemVariants}>
                     <Divider sx={{ my: 3 }}>
@@ -560,11 +588,7 @@ const FeedbackDisplay = ({ feedback, loading, error, onReset, trackInfo, selecte
                     
                   <motion.div variants={itemVariants}>
                     <Box sx={{ backgroundColor: 'rgba(0, 0, 0, 0.01)', p: 3, borderRadius: 2, mt: 2 }}>
-                      {feedback.analysis ? formatFeedbackSection(feedback.analysis) : (
-                        <Typography variant="body1">
-                          No detailed analysis available for this track. Please try uploading again.
-                        </Typography>
-                      )}
+                      {renderFeedback()}
                     </Box>
                   </motion.div>
                     
@@ -582,7 +606,7 @@ const FeedbackDisplay = ({ feedback, loading, error, onReset, trackInfo, selecte
                         
                       <motion.div variants={itemVariants}>
                         <Box sx={{ backgroundColor: 'rgba(0, 0, 0, 0.01)', p: 3, borderRadius: 2 }}>
-                          {formatFeedbackSection(feedback.comparisonToReference)}
+                          {renderFeedback()}
                         </Box>
                       </motion.div>
                     </>
@@ -600,7 +624,7 @@ const FeedbackDisplay = ({ feedback, loading, error, onReset, trackInfo, selecte
                             {feedback && feedback.technicalInsights ? (
                               <>
                                 {typeof feedback.technicalInsights === 'string' && feedback.technicalInsights.length > 0 ? (
-                                  formatFeedbackSection(feedback.technicalInsights)
+                                  renderFeedback()
                                 ) : (
                                   <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap' }}>
                                     {JSON.stringify(feedback.analysis)}
@@ -639,7 +663,7 @@ const FeedbackDisplay = ({ feedback, loading, error, onReset, trackInfo, selecte
                             borderRadius: 2 
                           }}
                         >
-                          {formatFeedbackSection(feedback.nextSteps)}
+                          {renderFeedback()}
                         </Box>
                       </motion.div>
                     </>

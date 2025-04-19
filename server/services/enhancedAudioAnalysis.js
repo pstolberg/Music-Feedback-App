@@ -4,33 +4,60 @@ const mm = require('music-metadata');
 const ffmpeg = require('fluent-ffmpeg');
 const Meyda = require('meyda');
 
-// Initialize essentia.js with a flag to track availability
+// Initialize Essentia.js properly
 let essentia = null;
-let essentiaAvailable = false;
 
 async function initEssentia() {
-  if (!essentia && !essentiaAvailable) {
-    try {
-      // Dynamically import EssentiaWASM only when needed
-      const { EssentiaWASM } = require('essentia.js');
-      essentia = await EssentiaWASM();
-      essentiaAvailable = true;
-      console.log('Essentia.js initialized successfully');
-      return essentia;
-    } catch (err) {
-      console.error('Error initializing Essentia.js:', err);
-      essentiaAvailable = false;
-      return null;
-    }
+  try {
+    // Import essentia.js using the correct pattern
+    const Essentia = require('essentia.js');
+    
+    // Properly initialize by using the main Essentia object first
+    console.log('Essentia.js imported, initializing WASM module...');
+    
+    // Initialize the WebAssembly module
+    essentia = await Essentia.EssentiaWASM();
+    
+    // Create the high-level algorithms interface
+    const algorithms = new Essentia.Essentia(essentia);
+    
+    console.log('Essentia.js initialized successfully!');
+    console.log('Available algorithms:', Object.keys(algorithms).length);
+    
+    // Store both the low-level and high-level interfaces
+    return {
+      lowLevel: essentia,
+      algorithms: algorithms,
+      available: true
+    };
+  } catch (error) {
+    console.error('Error initializing Essentia.js:', error);
+    console.log('Will continue with fallback audio analysis methods');
+    return {
+      lowLevel: null,
+      algorithms: null,
+      available: false
+    };
   }
-  return essentia;
 }
 
-// Try to initialize on module load but don't block if it fails
-initEssentia().catch(err => {
-  console.warn('Non-blocking warning: Failed to initialize Essentia on load:', err.message);
-  essentiaAvailable = false;
-});
+// Store the initialized instance
+let essentiaInstance = null;
+
+// Execute initialization on module load
+(async function() {
+  try {
+    essentiaInstance = await initEssentia();
+    if (essentiaInstance.available) {
+      console.log(' Essentia.js is ready for use');
+    } else {
+      console.log(' Using fallback analysis methods only');
+    }
+  } catch (error) {
+    console.log(' Essentia initialization failed, using fallbacks only:', error.message);
+    essentiaInstance = { available: false };
+  }
+})();
 
 /**
  * Extract comprehensive audio features from a music track following the reference architecture
@@ -134,9 +161,9 @@ async function extractFeaturesWithFallbacks(trackPath) {
     
     // Extract features using Essentia.js only if available
     console.log('Extracting Essentia features...');
-    if (essentiaAvailable) {
+    if (essentiaInstance && essentiaInstance.available) {
       try {
-        const essentiaFeatures = await extractEssentiaFeatures(normalizedPath);
+        const essentiaFeatures = await extractEssentiaFeatures(normalizedPath, essentiaInstance.lowLevel);
         
         // Combine Essentia features
         features.waveform = {
@@ -303,175 +330,83 @@ async function extractBasicMetadataFromFile(filePath) {
 /**
  * Extract features using Essentia.js
  * @param {string} audioPath Path to the normalized audio file
+ * @param {Object} essentia Essentia low-level instance
  * @returns {Promise<Object>} Extracted features
  */
-async function extractEssentiaFeatures(audioPath) {
+async function extractEssentiaFeatures(audioPath, essentia) {
   try {
-    // Check if Essentia is available
-    if (!essentiaAvailable) {
-      console.warn('Essentia.js not available for feature extraction');
-      return {
-        waveform: {},
-        spectral: {},
-        rhythm: {},
-        harmonic: {}
-      };
-    }
-    
-    const essentia = await initEssentia();
-    if (!essentia) {
-      throw new Error('Failed to initialize Essentia.js');
-    }
-    
     // Read audio file as buffer
     const audioData = fs.readFileSync(audioPath);
     
-    // Convert to format Essentia can use
-    // Note: This is a simplification - in production we would properly decode the audio
-    // and use a more efficient approach than loading the whole file into memory
-    const audioBuffer = new Float32Array(audioData.slice(0, 1000000)); // Limit size for demo
+    console.log(`Processing audio file with Essentia.js: ${audioPath}`);
     
-    // Extract rhythm features
-    const rhythmFeatures = await extractRhythmFeatures(essentia, audioBuffer);
+    // Get Essentia algorithm instance
+    const algorithms = new (require('essentia.js')).Essentia(essentia);
     
-    // Extract harmonic features
-    const harmonicFeatures = await extractHarmonicFeatures(essentia, audioBuffer);
+    // Convert buffer to Float32Array that Essentia can process
+    const audioFloat32 = new Float32Array(audioData);
     
-    // Extract spectral features
-    const spectralFeatures = await extractSpectralFeatures(essentia, audioBuffer);
+    // Apply normalization to the audio signal
+    const normalizedAudio = algorithms.Normalize(audioFloat32).output;
     
-    // Extract waveform features
-    const waveformFeatures = await extractWaveformFeatures(essentia, audioBuffer);
+    // === Spectral Analysis ===
+    // Compute spectral centroid
+    const spectralCentroid = algorithms.SpectralCentroid(normalizedAudio).spectralCentroid;
+    
+    // Compute spectral complexity
+    const spectralComplexity = algorithms.SpectralComplexity(normalizedAudio).spectralComplexity;
+    
+    // Compute spectral energy
+    const spectralEnergy = algorithms.Energy(normalizedAudio).energy;
+    
+    // === Rhythm Analysis ===
+    // Detect beats
+    const rhythm = algorithms.RhythmExtractor2013(normalizedAudio, 44100);
+    const bpm = rhythm.bpm;
+    const beats = rhythm.ticks;
+    
+    // === Key Detection ===
+    // Detect key and scale
+    const keyResults = algorithms.KeyExtractor(normalizedAudio);
+    const key = keyResults.key;
+    const scale = keyResults.scale; // 'major' or 'minor'
+    
+    // === Loudness Analysis ===
+    // Compute dynamic range
+    const dynamicRange = algorithms.DynamicComplexity(normalizedAudio);
     
     return {
-      waveform: waveformFeatures,
-      spectral: spectralFeatures,
-      rhythm: rhythmFeatures,
-      harmonic: harmonicFeatures
+      waveform: {
+        normalized: true,
+        length: normalizedAudio.length
+      },
+      spectral: {
+        centroid: spectralCentroid,
+        complexity: spectralComplexity,
+        energy: spectralEnergy
+      },
+      rhythm: {
+        bpm: bpm,
+        confidence: rhythm.confidence,
+        beats_count: beats.length
+      },
+      harmonic: {
+        key: `${key} ${scale}`,
+        key_confidence: keyResults.confidence
+      },
+      dynamics: {
+        value: dynamicRange.dynamicComplexity,
+        crest: dynamicRange.crest
+      }
     };
   } catch (error) {
-    console.error('Error extracting Essentia features:', error);
-    // Return empty features rather than failing
+    console.error('Error in Essentia feature extraction:', error);
+    // Return basic structure but empty values
     return {
       waveform: {},
       spectral: {},
       rhythm: {},
       harmonic: {}
-    };
-  }
-}
-
-/**
- * Extract rhythm features
- * @param {Object} essentia Essentia instance
- * @param {Float32Array} audioBuffer Audio buffer
- * @returns {Promise<Object>} Rhythm features
- */
-async function extractRhythmFeatures(essentia, audioBuffer) {
-  try {
-    // Convert to Essentia vector
-    const audioVector = essentia.arrayToVector(audioBuffer);
-    
-    // Extract rhythm features
-    const rhythm = essentia.RhythmExtractor2013(audioVector, 44100);
-    
-    return {
-      bpm: rhythm.bpm,
-      confidence: rhythm.confidence,
-      beats: rhythm.ticks.length,
-      beatStrength: calculateBeatStrength(rhythm.ticks)
-    };
-  } catch (error) {
-    console.error('Error extracting rhythm features:', error);
-    return {
-      bpm: 120, // Default value
-      confidence: 0.5,
-      beats: 0,
-      beatStrength: 'Unknown'
-    };
-  }
-}
-
-/**
- * Extract harmonic features
- * @param {Object} essentia Essentia instance
- * @param {Float32Array} audioBuffer Audio buffer
- * @returns {Promise<Object>} Harmonic features
- */
-async function extractHarmonicFeatures(essentia, audioBuffer) {
-  try {
-    // Convert to Essentia vector
-    const audioVector = essentia.arrayToVector(audioBuffer);
-    
-    // Extract key
-    const key = essentia.KeyExtractor(audioVector);
-    
-    return {
-      key: key.key,
-      scale: key.scale,
-      strength: key.strength
-    };
-  } catch (error) {
-    console.error('Error extracting harmonic features:', error);
-    return {
-      key: 'C',
-      scale: 'major',
-      strength: 0.5
-    };
-  }
-}
-
-/**
- * Extract spectral features
- * @param {Object} essentia Essentia instance
- * @param {Float32Array} audioBuffer Audio buffer
- * @returns {Promise<Object>} Spectral features
- */
-async function extractSpectralFeatures(essentia, audioBuffer) {
-  try {
-    // Convert to Essentia vector
-    const audioVector = essentia.arrayToVector(audioBuffer);
-    
-    // Spectral features
-    const spectralContrast = essentia.SpectralContrast(audioVector);
-    
-    return {
-      contrast: calculateAverage(spectralContrast.spectralContrast),
-      valleys: calculateAverage(spectralContrast.spectralValley)
-    };
-  } catch (error) {
-    console.error('Error extracting spectral features:', error);
-    return {
-      contrast: 0.5,
-      valleys: 0.5
-    };
-  }
-}
-
-/**
- * Extract waveform features
- * @param {Object} essentia Essentia instance
- * @param {Float32Array} audioBuffer Audio buffer
- * @returns {Promise<Object>} Waveform features
- */
-async function extractWaveformFeatures(essentia, audioBuffer) {
-  try {
-    // Convert to Essentia vector
-    const audioVector = essentia.arrayToVector(audioBuffer);
-    
-    // Dynamic features
-    const dynamicComplexity = essentia.DynamicComplexity(audioVector);
-    const loudness = essentia.Loudness(audioVector);
-    
-    return {
-      dynamicRange: dynamicComplexity.dynamicComplexity,
-      loudness: loudness.loudness
-    };
-  } catch (error) {
-    console.error('Error extracting waveform features:', error);
-    return {
-      dynamicRange: 0.5,
-      loudness: -20
     };
   }
 }

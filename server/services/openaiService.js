@@ -24,58 +24,100 @@ console.log('OpenAI client initialized with API key');
  * @param {Object} songFeatures Optional pre-extracted song features
  * @returns {Object} Detailed feedback object
  */
-async function analyzeMusicTrack(trackPath, referenceArtists = [], songFeatures = null) {
+async function analyzeMusicTrack(trackPath, referenceArtists = [], songFeatures = {}) {
   console.log('Starting OpenAI feedback generation with timeout protection');
   
   // Add a timeout promise that will reject after 30 seconds
   const timeoutPromise = new Promise((_, reject) => {
-    setTimeout(() => {
-      console.log('OpenAI API call timed out after 30 seconds');
-      reject(new Error('OPENAI_TIMEOUT'));
-    }, 30000);
+    setTimeout(() => reject(new Error('OPENAI_TIMEOUT')), 30000);
   });
-
+  
   try {
-    // If song features weren't provided, they need to be extracted
-    if (!songFeatures) {
-      console.log('No pre-extracted features provided. This should not happen in the new architecture.');
-      // Import here to avoid circular dependency
+    // If we didn't receive features, extract them now
+    if (!songFeatures || Object.keys(songFeatures).length === 0) {
+      console.log('No song features provided, extracting them now...');
       const { extractEnhancedAudioFeatures } = require('./enhancedAudioAnalysis');
-      console.log('Extracting audio features from:', trackPath);
-      songFeatures = await extractEnhancedAudioFeatures(trackPath);
+      try {
+        songFeatures = await extractEnhancedAudioFeatures(trackPath);
+        console.log('Audio features extracted successfully');
+      } catch (error) {
+        console.error('Error extracting audio features:', error);
+        songFeatures = createBasicFeatures();
+      }
+    } else {
       console.log('Audio features extracted successfully');
     }
     
+    // Format features for the prompt
+    // Extract basic info about the track
+    const title = songFeatures.title || "Unknown Title";
+    const tempo = typeof songFeatures.tempo === 'object' ? songFeatures.tempo.value || 120 : songFeatures.tempo || 120;
+    const key = (typeof songFeatures.harmonic === 'object' && songFeatures.harmonic.key) ? 
+                songFeatures.harmonic.key : songFeatures.key || "Unknown";
+    const energy = songFeatures.energy || 0.7;
+    const dynamics = typeof songFeatures.dynamics === 'object' ? 
+                     songFeatures.dynamics.value || 6 : songFeatures.dynamics || 6;
+    const loudness = songFeatures.loudness?.value || -14; // Default LUFS value
+    const peakDb = songFeatures.loudness?.peak || -1; // Default peak in dBFS
+    const spectralBalance = songFeatures.spectralBalance || "Unknown";
+    const complexity = typeof songFeatures.complexity === 'object' ? 
+                       songFeatures.complexity.description : songFeatures.complexity || "Medium";
+    const mood = songFeatures.mood || "Unknown";
+    
+    // Format reference artists
     const artistsString = referenceArtists.length > 0 
-      ? `The user wants their track to sound similar to: ${referenceArtists.join(', ')}.` 
-      : 'No specific reference artists were selected.';
+      ? `The reference artist is: ${referenceArtists.join(', ')}.` 
+      : "No reference artist was selected.";
     
-    // Prepare the feature summary for OpenAI prompt
-    const featureSummary = prepareFeatureSummaryForPrompt(songFeatures);
-    
-    // Include reference artist comparison if available
-    let comparisonString = '';
-    if (songFeatures.comparisons) {
-      comparisonString = prepareComparisonSummaryForPrompt(songFeatures.comparisons, referenceArtists);
-    }
-    
+    // Create the features summary
+    const featureSummary = `Here are the extracted features of my track:
+• Title: ${title}
+• BPM: ${tempo}
+• Key & mode: ${key}
+• Dynamics: ${dynamics} dB
+• RMS loudness (approx): ${loudness} LUFS
+• Peak headroom: ${peakDb} dBFS
+• Energy: ${energy}
+• Complexity: ${complexity}
+• Mood: ${mood}
+${spectralBalance !== "Unknown" ? `• Spectral balance: ${spectralBalance}` : ''}`;
+
     // Create the OpenAI call but wrap it in a Promise.race with the timeout
     const openaiPromise = new Promise(async (resolve, reject) => {
       try {
-        const model = "gpt-4o";  // Using gpt-4o model as requested by user
+        const model = "gpt-4o"; // Using gpt-4o model as requested by user
+        const systemPrompt = `You are a seasoned audio engineer and music‑production coach specializing in electronic music. 
+You give constructive, actionable feedback to producers wanting to improve their tracks.
+Reference production styles accurately, explain technical concepts in plain language,
+and always end with 3–5 specific next‑step tasks the producer can try in their DAW.
+Be detailed and technical in your analysis, focusing on mix, arrangement, sound design, 
+and production techniques common in electronic music.`;
+
+        const userPrompt = `${featureSummary}
+
+${artistsString}
+
+Please:
+1. Summarize the overall vibe you hear from the numbers above.
+2. ${referenceArtists.length > 0 ? `Compare my track profile with common characteristics of ${referenceArtists.join(', ')}.` : "Analyze my track profile based on its technical parameters."}
+3. Highlight 3–5 strengths of the track.
+4. Point out the top technical gaps (mix, arrangement, loudness, spectral balance, etc.).
+5. Give concrete, DAW-agnostic suggestions (plugins, techniques, settings ranges) for closing those gaps.
+6. Suggest one creative experiment I could try to enhance my production.
+
+Structure your answer with clear headings and concise bullet points.`;
+
         const messages = [
           {
             role: "system",
-            content: `You are a professional music producer and mixing engineer specializing in electronic music. You analyze tracks and provide detailed technical feedback on production quality, mixing, arrangement and sound design.\n
-          ${artistsString}\n
-          Focus heavily on technical aspects like dynamics, spectral balance, stereo image, and arrangement techniques that are specific to electronic music production.\n
-          In your analysis, use a supportive but direct tone. Don't be afraid to point out areas that need improvement, but frame constructive criticism in a helpful way.`
+            content: systemPrompt
           },
           {
             role: "user",
-            content: `I've just analyzed a music track. Here are the technical details:\n\n${featureSummary}\n\n${comparisonString}\n\nProvide a comprehensive technical analysis focused on mixing, sound design, and arrangement. Include specific recommendations for improvement based on the technical data.`
+            content: userPrompt
           }
         ];
+        
         const temperature = 0.7;
         
         // Direct reliable call to GPT-4o with error handling
@@ -124,47 +166,21 @@ async function analyzeMusicTrack(trackPath, referenceArtists = [], songFeatures 
         reject(err);
       }
     });
+
+    // Race between OpenAI API call and timeout
+    const response = await Promise.race([openaiPromise, timeoutPromise]);
+    console.log('OpenAI API call completed successfully');
+    return response;
+  } catch (error) {
+    console.error('OpenAI API call failed or timed out:', error.message);
     
-    // Race the OpenAI call against the timeout
-    console.log('Starting Promise.race for OpenAI call...');
-    let response;
-    try {
-      response = await Promise.race([openaiPromise, timeoutPromise]);
-      console.log('Promise.race completed: API call won the race');
-    } catch (raceError) {
-      console.error('Promise.race error:', raceError.message);
-      if (raceError.message === 'OPENAI_TIMEOUT') {
-        console.log('OpenAI API call timed out, using fallback');
-        return createFallbackFeedback(songFeatures, referenceArtists);
-      }
-      throw raceError; // Re-throw if it's not a timeout
+    // Return a fallback response
+    if (error.message === 'OPENAI_TIMEOUT') {
+      console.log('OpenAI API call timed out after 30 seconds');
     }
     
-    // Process the feedback as normal if we didn't time out
-    const feedback = response.choices[0]?.message?.content || '';
-    
-    // Parse different sections from feedback
-    const sections = parseFeedbackSections(feedback);
-    
-    return {
-      analysis: sections.analysis,
-      comparisonToReference: sections.comparison,
-      technicalInsights: sections.technical,
-      nextSteps: sections.recommendations,
-      songFeatures,
-      audioFeatures: {
-        tempo: songFeatures.tempo || 120,
-        key: songFeatures.key || 'Unknown',
-        energy: songFeatures.energy || 0.5,
-        dynamics: songFeatures.dynamics || 6
-      }
-    };
-  } catch (error) {
-    console.error('Error generating feedback with OpenAI:', error.message);
-    
-    // Provide fallback feedback when OpenAI fails
-    console.log('Using fallback feedback generation');
-    return createFallbackFeedback(songFeatures, referenceArtists);
+    // Return basic feedback in case of any error
+    return createFallbackResponse(songFeatures, referenceArtists);
   }
 }
 
