@@ -3,26 +3,25 @@ import {
   Box, 
   Typography, 
   Paper, 
-  Button, 
-  CircularProgress, 
-  Alert,
-  Chip,
-  Divider,
   Grid,
-  useTheme,
+  Chip,
+  Container,
+  Button,
+  Divider,
+  CircularProgress,
+  Alert,
   Card,
-  CardContent
+  CardContent,
+  Zoom,
+  Fade,
+  Avatar
 } from '@mui/material';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import MusicNoteIcon from '@mui/icons-material/MusicNote';
-import ReplayIcon from '@mui/icons-material/Replay';
-import LowPriorityIcon from '@mui/icons-material/LowPriority';
-import AssessmentIcon from '@mui/icons-material/Assessment';
 import InsightsIcon from '@mui/icons-material/Insights';
 import VolumeUpIcon from '@mui/icons-material/VolumeUp';
-import TuneIcon from '@mui/icons-material/Tune';
+import SpeedIcon from '@mui/icons-material/Speed';
 import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
-import SpeedIcon from '@mui/icons-material/Speed'; // Added SpeedIcon
 import ReactMarkdown from 'react-markdown';
 
 // Animation variants
