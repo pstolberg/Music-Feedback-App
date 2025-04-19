@@ -1,5 +1,5 @@
 import React from 'react';
-import { Box, Step, StepLabel, Stepper, styled } from '@mui/material';
+import { Step, StepLabel, Stepper, styled } from '@mui/material';
 import { motion } from 'framer-motion';
 
 const StyledStepper = styled(Stepper)(({ theme }) => ({

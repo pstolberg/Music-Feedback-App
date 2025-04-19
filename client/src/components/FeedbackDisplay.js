@@ -11,9 +11,7 @@ import {
   Grid,
   useTheme,
   Card,
-  CardContent,
-  LinearProgress,
-  Tooltip
+  CardContent
 } from '@mui/material';
 import { motion, AnimatePresence } from 'framer-motion';
 import MusicNoteIcon from '@mui/icons-material/MusicNote';
