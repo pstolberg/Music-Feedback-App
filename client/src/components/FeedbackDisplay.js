@@ -5,16 +5,12 @@ import {
   Paper, 
   Grid,
   Chip,
-  Container,
   Button,
   Divider,
   CircularProgress,
   Alert,
   Card,
   CardContent,
-  Zoom,
-  Fade,
-  Avatar,
   useTheme
 } from '@mui/material';
 import { motion, AnimatePresence } from 'framer-motion';
