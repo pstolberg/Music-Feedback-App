@@ -6,6 +6,6 @@
     "silent": true
   },
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/index.js" }
+    { "source": "/api/analyze-track", "destination": "/api/analyze-track" }
   ]
 }
