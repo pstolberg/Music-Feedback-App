@@ -14,14 +14,18 @@ import {
   CardContent,
   Zoom,
   Fade,
-  Avatar
+  Avatar,
+  useTheme
 } from '@mui/material';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import MusicNoteIcon from '@mui/icons-material/MusicNote';
 import InsightsIcon from '@mui/icons-material/Insights';
 import VolumeUpIcon from '@mui/icons-material/VolumeUp';
 import SpeedIcon from '@mui/icons-material/Speed';
 import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
+import ReplayIcon from '@mui/icons-material/Replay';
+import LowPriorityIcon from '@mui/icons-material/LowPriority';
+import AssessmentIcon from '@mui/icons-material/Assessment';
 import ReactMarkdown from 'react-markdown';
 
 // Animation variants
