@@ -1,7 +1,7 @@
 // Enhanced serverless function for Music Feedback App
 const OpenAI = require('openai');
 const multer = require('multer');
-const { query } = require('./db');
+const db = require('./db');
 
 // Configure multer for memory storage
 const storage = multer.memoryStorage();
@@ -59,6 +59,9 @@ async function generateAIFeedback(audioFeatures, trackName, referenceArtists = [
   });
 
   try {
+    console.log('Initializing OpenAI API with key starting with:', 
+      process.env.OPENAI_API_KEY ? process.env.OPENAI_API_KEY.substring(0, 3) + '...' : 'undefined');
+    
     // Create the professional audio analysis prompt
     const prompt = `
 # Music Production Analysis Request
@@ -109,6 +112,7 @@ Please format your response clearly with markdown headings and bullet points.
       timeoutPromise
     ]);
     
+    console.log('OpenAI API response received successfully');
     return response.choices[0].message.content;
   } catch (error) {
     console.error('OpenAI API error:', error.message);
@@ -157,8 +161,11 @@ module.exports = async (req, res) => {
       return res.status(400).json({ error: 'No audio file uploaded' });
     }
 
+    console.log('File received:', req.file.originalname, 'Size:', req.file.size);
+
     // Extract basic audio features
     const audioFeatures = extractBasicAudioFeatures(req.file);
+    console.log('Audio features extracted:', JSON.stringify(audioFeatures));
     
     // Parse reference artists if provided
     let referenceArtists = [];
@@ -175,16 +182,19 @@ module.exports = async (req, res) => {
     console.log('Generating AI feedback for track:', req.file.originalname);
     const analysis = await generateAIFeedback(audioFeatures, req.file.originalname, referenceArtists);
     
-    try {
-      // Store analysis in database
-      await query(
-        'INSERT INTO track_analysis (track_name, analysis, audio_features) VALUES ($1, $2, $3)',
-        [req.file.originalname, analysis, audioFeatures]
-      );
-      console.log('Analysis stored in database');
-    } catch (dbError) {
-      // Continue even if database storage fails
-      console.error('Database error:', dbError.message);
+    // Try to store in database if available, but continue if it fails
+    if (db.isEnabled()) {
+      try {
+        await db.query(
+          'INSERT INTO track_analysis (track_name, analysis, audio_features) VALUES ($1, $2, $3)',
+          [req.file.originalname, analysis, audioFeatures]
+        );
+        console.log('Analysis stored in database');
+      } catch (dbError) {
+        console.error('Database error:', dbError);
+      }
+    } else {
+      console.log('Skipping database storage - database not configured');
     }
     
     // Prepare reference artist comparison if any were selected
@@ -192,6 +202,7 @@ module.exports = async (req, res) => {
       `Your track was compared against the styles of ${referenceArtists.join(', ')}.` : null;
 
     // Return analysis response with the enhanced structure
+    console.log('Sending successful response');
     return res.status(200).json({
       analysis: analysis,
       technicalInsights: analysis,
