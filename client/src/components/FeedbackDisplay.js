@@ -22,6 +22,7 @@ import InsightsIcon from '@mui/icons-material/Insights';
 import VolumeUpIcon from '@mui/icons-material/VolumeUp';
 import TuneIcon from '@mui/icons-material/Tune';
 import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
+import SpeedIcon from '@mui/icons-material/Speed'; // Added SpeedIcon
 import ReactMarkdown from 'react-markdown';
 
 // Animation variants
@@ -251,7 +252,7 @@ const FeedbackDisplay = ({ feedback, loading, error, onReset, trackInfo, selecte
           title: 'BPM', 
           value: 'N/A',
           description: 'Track tempo in beats per minute',
-          icon: <TuneIcon />,
+          icon: <SpeedIcon />,
           color: 'primary'
         },
         { 
@@ -282,9 +283,22 @@ const FeedbackDisplay = ({ feedback, loading, error, onReset, trackInfo, selecte
     return [
       { 
         title: 'BPM', 
-        value: audioFeatures.tempo ? Math.round(audioFeatures.tempo) : 'N/A',
+        value: (() => {
+          // Comprehensive type checking for tempo/BPM value
+          if (!audioFeatures.tempo) return 'N/A';
+          
+          // Handle object type (from some API responses)
+          if (typeof audioFeatures.tempo === 'object') {
+            const val = audioFeatures.tempo.value;
+            return val ? Math.round(Number(val)).toString() : 'N/A';
+          }
+          
+          // Handle number or string type
+          const tempoNum = Number(audioFeatures.tempo);
+          return !isNaN(tempoNum) ? Math.round(tempoNum).toString() : 'N/A';
+        })(),
         description: 'Track tempo in beats per minute',
-        icon: <TuneIcon />,
+        icon: <SpeedIcon />,
         color: 'primary'
       },
       { 
@@ -296,22 +310,40 @@ const FeedbackDisplay = ({ feedback, loading, error, onReset, trackInfo, selecte
       },
       { 
         title: 'Dynamics', 
-        value: audioFeatures.dynamics ? 
-          (typeof audioFeatures.dynamics === 'object' ? 
-            `${audioFeatures.dynamics.value?.toFixed(1) || 'N/A'} dB` : 
-            `${audioFeatures.dynamics.toFixed(1)} dB`) : 
-          'N/A',
+        value: (() => {
+          // Comprehensive type checking for dynamics value
+          if (!audioFeatures.dynamics) return 'N/A';
+          
+          // Handle object type (from some API responses)
+          if (typeof audioFeatures.dynamics === 'object') {
+            const val = audioFeatures.dynamics.value;
+            return val ? `${Number(val).toFixed(1)} dB` : 'N/A dB';
+          }
+          
+          // Handle number or string type
+          const dynamicsNum = Number(audioFeatures.dynamics);
+          return !isNaN(dynamicsNum) ? `${dynamicsNum.toFixed(1)} dB` : 'N/A dB';
+        })(),
         description: 'Dynamic range of the track',
         icon: <VolumeUpIcon />,
         color: 'success'
       },
       { 
         title: 'Energy', 
-        value: audioFeatures.energy ? 
-          (typeof audioFeatures.energy === 'object' ? 
-            `${Math.round((audioFeatures.energy.value || 0) * 100)}%` : 
-            `${Math.round(audioFeatures.energy * 100)}%`) : 
-          'N/A',
+        value: (() => {
+          // Comprehensive type checking for energy value
+          if (!audioFeatures.energy) return 'N/A';
+          
+          // Handle object type (from some API responses)
+          if (typeof audioFeatures.energy === 'object') {
+            const val = audioFeatures.energy.value;
+            return val ? `${(Number(val) * 100).toFixed(0)}%` : 'N/A';
+          }
+          
+          // Handle number or string type
+          const energyNum = Number(audioFeatures.energy);
+          return !isNaN(energyNum) ? `${(energyNum * 100).toFixed(0)}%` : 'N/A';
+        })(),
         description: 'Perceived energy level',
         icon: <InsightsIcon />,
         color: 'warning'
