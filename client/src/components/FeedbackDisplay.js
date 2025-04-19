@@ -394,23 +394,7 @@ const FeedbackDisplay = ({ feedback, loading, error, onReset, trackInfo, selecte
         </Paper>
       )}
       
-      {/* DIRECT OUTPUT: Always display raw analysis regardless of formatting issues */}
-      {feedback && (feedback.analysis || feedback.technicalInsights) && (
-        <Paper elevation={3} sx={{ p: 3, mb: 3, bgcolor: '#f8f9fa', overflowX: 'auto' }}>
-          <Typography variant="h5" gutterBottom sx={{ color: theme.palette.primary.main, fontWeight: 'bold' }}>
-            <MusicNoteIcon sx={{ verticalAlign: 'middle', mr: 1 }} />
-            Professional Track Analysis (GPT-4o)
-          </Typography>
-          
-          <Typography variant="body1" sx={{ fontStyle: 'italic', mb: 2 }}>
-            Analysis based on extracted audio features and reference artists.
-          </Typography>
-          
-          <Box sx={{ p: 2, bgcolor: 'white', borderRadius: 1, whiteSpace: 'pre-wrap' }}>
-            {feedback.analysis || feedback.technicalInsights || "No analysis generated. Please try uploading your track again."}
-          </Box>
-        </Paper>
-      )}
+      {/* Removed redundant DIRECT OUTPUT section that was causing duplicate feedback */}
       
       {/* Joke initial feedback */}
       <AnimatePresence>
