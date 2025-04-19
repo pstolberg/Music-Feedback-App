@@ -204,6 +204,26 @@ const FeedbackDisplay = ({ feedback, loading, error, onReset, trackInfo, selecte
         }
       }
       
+      // Remove any title/heading lines referring to the track name to avoid duplication
+      if (typeof analysisContent === 'string') {
+        // Remove any lines that contain track title or "Music Production Analysis for"
+        let lines = analysisContent.split('\n');
+        let trackName = trackInfo?.name || '';
+        
+        // Filter out title lines and headers that reference the track
+        lines = lines.filter(line => {
+          const isTitle = line.startsWith('# ') && 
+                         (line.includes('Music Production Analysis') || 
+                          line.includes(trackName) || 
+                          line.includes('Track Analysis'));
+          
+          // Keep the line if it's not a title we want to remove
+          return !isTitle;
+        });
+        
+        analysisContent = lines.join('\n');
+      }
+      
       // Log the final content being displayed for debugging
       console.log('Rendering feedback content, length:', analysisContent.length);
       
@@ -605,85 +625,8 @@ const FeedbackDisplay = ({ feedback, loading, error, onReset, trackInfo, selecte
                     </Box>
                   </motion.div>
                     
-                  {feedback.comparisonToReference && (
-                    <>
-                      <motion.div variants={itemVariants}>
-                        <Divider sx={{ my: 3 }}>
-                          <Chip 
-                            icon={<CompareArrowsIcon />} 
-                            label="COMPARISON TO REFERENCE ARTISTS" 
-                            sx={{ px: 1, fontWeight: 500 }}
-                          />
-                        </Divider>
-                      </motion.div>
-                        
-                      <motion.div variants={itemVariants}>
-                        <Box sx={{ backgroundColor: 'rgba(0, 0, 0, 0.01)', p: 3, borderRadius: 2 }}>
-                          {renderFeedback()}
-                        </Box>
-                      </motion.div>
-                    </>
-                  )}
-                    
-                  {feedback.technicalInsights && (
-                    <>
-                      <motion.div variants={itemVariants}>
-                        <Box sx={{ mb: 4 }}>
-                          <Typography variant="h5" gutterBottom sx={{ fontWeight: 'medium', color: theme.palette.primary.main }}>
-                            <MusicNoteIcon sx={{ verticalAlign: 'middle', mr: 1 }} />
-                            Technical Insights
-                          </Typography>
-                          <Paper elevation={1} sx={{ p: 3, bgcolor: 'rgba(255, 255, 255, 0.8)' }}>
-                            {feedback && feedback.technicalInsights ? (
-                              <>
-                                {typeof feedback.technicalInsights === 'string' && feedback.technicalInsights.length > 0 ? (
-                                  renderFeedback()
-                                ) : (
-                                  <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap' }}>
-                                    {JSON.stringify(feedback.analysis)}
-                                  </Typography>
-                                )}
-                              </>
-                            ) : (
-                              <Typography variant="body1">
-                                No technical insights available for this track. Please try uploading again.
-                              </Typography>
-                            )}
-                          </Paper>
-                        </Box>
-                      </motion.div>
-                    </>
-                  )}
-                    
-                  {feedback.nextSteps && (
-                    <>
-                      <motion.div variants={itemVariants}>
-                        <Divider sx={{ my: 3 }}>
-                          <Chip 
-                            icon={<InsightsIcon />} 
-                            label="IMPROVEMENT RECOMMENDATIONS" 
-                            sx={{ px: 1, fontWeight: 500 }}
-                          />
-                        </Divider>
-                      </motion.div>
-                        
-                      <motion.div variants={itemVariants}>
-                        <Box 
-                          sx={{ 
-                            backgroundColor: `${theme.palette.primary.light}15`,
-                            borderLeft: `4px solid ${theme.palette.primary.main}`,
-                            p: 3, 
-                            borderRadius: 2 
-                          }}
-                        >
-                          {renderFeedback()}
-                        </Box>
-                      </motion.div>
-                    </>
-                  )}
-                  
                   <motion.div variants={itemVariants}>
-                    <Box sx={{ display: 'flex', justifyContent: 'center', mt: 4 }}>
+                    <Box sx={{ display: 'flex', justifyContent: 'center', mt: 3 }}>
                       <Button
                         variant="contained"
                         onClick={onReset}
