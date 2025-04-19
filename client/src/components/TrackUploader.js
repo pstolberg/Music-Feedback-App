@@ -195,27 +195,43 @@ const TrackUploader = ({ onFeedbackReceived, onError, onUploadStart }) => {
       const apiUrl = process.env.NODE_ENV === 'production' 
         ? '/api/analyze-track'  // In production, use relative path
         : 'http://localhost:5002/api/analyze-track'; // In development, use full URL
+      
+      // Add timeout to prevent infinite hanging - abort after 50 seconds
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 50000);
+      
+      try {  
+        const response = await fetch(apiUrl, {
+          method: 'POST',
+          body: formData,
+          signal: controller.signal
+        });
         
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        body: formData,
-      });
+        // Clear the timeout since we got a response
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.message || 'Failed to analyze track');
+        }
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.message || 'Failed to analyze track');
+        const data = await response.json();
+        
+        // Format the track info to pass to parent component
+        const trackInfo = {
+          name: selectedFile.name,
+          size: selectedFile.size,
+          type: selectedFile.type
+        };
+        
+        onFeedbackReceived(data, trackInfo, selectedArtists);
+      } catch (error) {
+        if (error.name === 'AbortError') {
+          throw new Error('The request timed out. This could be due to server issues or a large file size.');
+        } else {
+          throw error;
+        }
       }
-
-      const data = await response.json();
-      
-      // Format the track info to pass to parent component
-      const trackInfo = {
-        name: selectedFile.name,
-        size: selectedFile.size,
-        type: selectedFile.type
-      };
-      
-      onFeedbackReceived(data, trackInfo, selectedArtists);
     } catch (error) {
       setIsUploading(false);
       setError(error.message || 'An error occurred during upload');
@@ -227,6 +243,12 @@ const TrackUploader = ({ onFeedbackReceived, onError, onUploadStart }) => {
   useEffect(() => {
     const checkSystemStatus = async () => {
       try {
+        // Skip system check in production since it's using serverless functions
+        if (process.env.NODE_ENV === 'production') {
+          setSystemStatus('OK');
+          return;
+        }
+        
         const response = await fetch('http://localhost:5002/api/system-check');
         if (response.ok) {
           const data = await response.json();
@@ -242,9 +264,12 @@ const TrackUploader = ({ onFeedbackReceived, onError, onUploadStart }) => {
           setErrorMessage('Unable to connect to the server. Is it running?');
         }
       } catch (error) {
-        console.error('System check error:', error);
-        setSystemStatus('ERROR');
-        setErrorMessage('Server connection failed. Please ensure the server is running on port 5002.');
+        // In development this indicates server issue, in production we use serverless
+        if (process.env.NODE_ENV !== 'production') {
+          console.error('System check error:', error);
+          setSystemStatus('ERROR');
+          setErrorMessage('Server connection failed. Please ensure the server is running on port 5002.');
+        }
       }
     };
 
