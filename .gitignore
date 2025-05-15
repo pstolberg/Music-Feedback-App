@@ -6,6 +6,7 @@
 # Environment variables
 .env
 /server/.env
+vercel-env.txt
 
 # Temporary files
 /server/uploads/*
